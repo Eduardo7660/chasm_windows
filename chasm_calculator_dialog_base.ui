@@ -1,0 +1,245 @@
+<ui version="4.0">
+ <class>ChasmDialogBase</class>
+ <widget class="QDialog" name="ChasmDialogBase">
+  <property name="geometry">
+   <rect>
+    <x>0</x><y>0</y><width>680</width><height>560</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Chasm Calculator</string>
+  </property>
+
+  <layout class="QVBoxLayout" name="verticalLayout">
+
+   <!-- ===== Bloco ZIP ===== -->
+   <item>
+    <widget class="QGroupBox" name="grpZip">
+     <property name="title"><string>Entrada: ZIP com Shapefile</string></property>
+     <layout class="QGridLayout" name="gridZip">
+      <item row="0" column="0">
+       <widget class="QLabel" name="lblZip">
+        <property name="text"><string>Arquivo .zip</string></property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="leZipPath">
+        <property name="placeholderText">
+         <string>Selecione um .zip contendo shapefile(s)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QPushButton" name="btnBrowse">
+        <property name="text"><string>Procurar…</string></property>
+       </widget>
+      </item>
+
+      <item row="1" column="0">
+       <widget class="QLabel" name="lblShp">
+        <property name="text"><string>Shapefile no .zip</string></property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QComboBox" name="cbShp"/>
+      </item>
+
+      <item row="2" column="0" colspan="3">
+       <widget class="QPlainTextEdit" name="txtStatus">
+        <property name="readOnly"><bool>true</bool></property>
+        <property name="placeholderText"><string>Status…</string></property>
+        <property name="maximumBlockCount"><number>500</number></property>
+        <property name="minimumHeight"><number>70</number></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+
+   <!-- ===== Parâmetros sDNA ===== -->
+   <item>
+    <widget class="QGroupBox" name="grpSdna">
+     <property name="title"><string>Parâmetros sDNA – Integral Analysis</string></property>
+     <layout class="QGridLayout" name="gridSdna">
+
+      <!-- (1) Camada da rede -->
+      <item row="0" column="0">
+       <widget class="QLabel" name="lblNet">
+        <property name="text"><string>Camada de sistema viário (linhas)</string></property>
+       </widget>
+      </item>
+      <item row="0" column="1" colspan="2">
+       <widget class="QComboBox" name="cbNetworkLayer"/>
+      </item>
+
+      <!-- (2) Betweenness -->
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="chkBetweenness">
+        <property name="text"><string>Compute betweenness (opcional)</string></property>
+        <property name="checked"><bool>false</bool></property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QCheckBox" name="chkBetweennessBidirectional">
+        <property name="text"><string>Betweenness bidirecional</string></property>
+        <property name="enabled"><bool>false</bool></property>
+        <property name="checked"><bool>false</bool></property>
+       </widget>
+      </item>
+
+      <!-- (3) Métrica -->
+      <item row="2" column="0">
+       <widget class="QLabel" name="lblMetric">
+        <property name="text"><string>Métrica</string></property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QComboBox" name="cbMetric">
+        <item><property name="text"><string>ANGULAR</string></property></item>
+        <item><property name="text"><string>EUCLIDEAN</string></property></item>
+        <item><property name="text"><string>NORMAL</string></property></item>
+       </widget>
+      </item>
+
+      <!-- (4) Raio + modo -->
+      <item row="3" column="0">
+       <widget class="QLabel" name="lblRadius">
+        <property name="text"><string>Raio (m)</string></property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QSpinBox" name="spinRadius">
+        <property name="minimum"><number>0</number></property>
+        <property name="maximum"><number>1000000</number></property>
+        <property name="singleStep"><number>100</number></property>
+        <property name="value"><number>1600</number></property>
+       </widget>
+      </item>
+      <item row="3" column="2">
+       <widget class="QWidget" name="wRadiusMode" native="true">
+        <layout class="QHBoxLayout" name="hlRadiusMode">
+         <item>
+          <widget class="QRadioButton" name="rbBand">
+           <property name="text"><string>Band radius</string></property>
+           <property name="checked"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="rbContinuous">
+           <property name="text"><string>Continuous space</string></property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+
+      <!-- (5) Weighting -->
+      <item row="4" column="0">
+       <widget class="QLabel" name="lblWeighting">
+        <property name="text"><string>Weighting</string></property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QComboBox" name="cbWeighting">
+        <item><property name="text"><string>Link</string></property></item>
+        <item><property name="text"><string>Node</string></property></item>
+       </widget>
+      </item>
+
+      <!-- (6) Origin weight (opcional) -->
+      <item row="5" column="0">
+       <widget class="QLabel" name="lblOriginW">
+        <property name="text"><string>Origin weight (opcional)</string></property>
+       </widget>
+      </item>
+      <item row="5" column="1" colspan="2">
+       <widget class="QComboBox" name="cbOriginWeight">
+        <property name="editable"><bool>true</bool></property>
+       </widget>
+      </item>
+
+      <!-- (7) Destination weights – 4 rodadas -->
+      <item row="6" column="0" colspan="3">
+       <widget class="QLabel" name="lblDestTitle">
+        <property name="text"><string>Destination weight (4 rodadas)</string></property>
+       </widget>
+      </item>
+
+      <item row="7" column="0">
+       <widget class="QLabel" name="lblDW1">
+        <property name="text"><string>1) Grupo interesse — cenário existente</string></property>
+       </widget>
+      </item>
+      <item row="7" column="1" colspan="2">
+       <widget class="QComboBox" name="cbDW1">
+        <property name="editable"><bool>true</bool></property>
+       </widget>
+      </item>
+
+      <item row="8" column="0">
+       <widget class="QLabel" name="lblDW2">
+        <property name="text"><string>2) Grupo outros — cenário existente</string></property>
+       </widget>
+      </item>
+      <item row="8" column="1" colspan="2">
+       <widget class="QComboBox" name="cbDW2">
+        <property name="editable"><bool>true</bool></property>
+       </widget>
+      </item>
+
+      <item row="9" column="0">
+       <widget class="QLabel" name="lblDW3">
+        <property name="text"><string>3) Grupo interesse — não-segregação</string></property>
+       </widget>
+      </item>
+      <item row="9" column="1" colspan="2">
+       <widget class="QComboBox" name="cbDW3">
+        <property name="editable"><bool>true</bool></property>
+       </widget>
+      </item>
+
+      <item row="10" column="0">
+       <widget class="QLabel" name="lblDW4">
+        <property name="text"><string>4) Grupo outros — não-segregação</string></property>
+       </widget>
+      </item>
+      <item row="10" column="1" colspan="2">
+       <widget class="QComboBox" name="cbDW4">
+        <property name="editable"><bool>true</bool></property>
+       </widget>
+      </item>
+
+     </layout>
+    </widget>
+   </item>
+
+   <!-- Botões OK/Cancelar -->
+   <item>
+    <widget class="QDialogButtonBox" name="button_box">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+     <property name="centerButtons"><bool>true</bool></property>
+    </widget>
+   </item>
+
+  </layout>
+ </widget>
+
+ <resources/>
+ <connections>
+  <connection>
+   <sender>button_box</sender>
+   <signal>accepted()</signal>
+   <receiver>ChasmDialogBase</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>button_box</sender>
+   <signal>rejected()</signal>
+   <receiver>ChasmDialogBase</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
+</ui>

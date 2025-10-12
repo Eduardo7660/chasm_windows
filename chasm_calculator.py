@@ -129,7 +129,7 @@ class Chasm:
 
         # ---------- 1) Carregar SHP de dentro do ZIP ----------
         zip_path = self.dlg.selected_zip()
-        shp_inside = self.dlg.selected_shp_inside_zip()
+        shp_inside = self.dlg.selected_shp1()
 
         if not zip_path:
             QMessageBox.warning(self.iface.mainWindow(), "Chasm", "Selecione um arquivo .zip.")

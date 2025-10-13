@@ -26,11 +26,16 @@
 
 # noinspection PyPep8Naming
 def classFactory(iface):  # pylint: disable=invalid-name
-    """Load Chasm class from file Chasm.
-
-    :param iface: A QGIS interface instance.
-    :type iface: QgsInterface
-    """
-    #
-    from .chasm_calculator import Chasm
+    # Importa com tratamento de erros para logar a causa real no QGIS
+    try:
+        from .chasm_calculator import Chasm
+    except Exception:
+        import traceback
+        from qgis.core import QgsMessageLog, Qgis
+        QgsMessageLog.logMessage(
+            "Falha ao importar chasm_calculator:\n" + traceback.format_exc(),
+            "chasm_calculator", Qgis.Critical
+        )
+        # Repropaga para o QGIS exibir também
+        raise
     return Chasm(iface)

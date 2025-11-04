@@ -5,14 +5,80 @@
   <property name="geometry">
    <rect><x>0</x><y>0</y><width>1000</width><height>760</height></rect>
   </property>
-  <property name="windowTitle">
-   <string>Chasm Calculator</string>
-  </property>
-
+  <property name="windowTitle"><string>Chasm Calculator</string></property>
   <layout class="QVBoxLayout" name="verticalLayout">
-
    <item>
     <widget class="QTabWidget" name="tabWidget">
+
+
+     <!-- ================== sDNA ================== -->
+     <!-- ================== sDNA ================== -->
+     <widget class="QWidget" name="tabSdna">
+      <attribute name="title"><string>sDNA</string></attribute>
+      <layout class="QGridLayout" name="gridSdna">
+
+       <item row="0" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string>Camada Setores (Polígonos)</string></property></widget></item>
+       <item row="0" column="1" colspan="2"><widget class="QComboBox" name="cbPoligonoLayer"/></item>
+
+       <item row="1" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string>Coluna do grupo de interesse</string></property></widget></item>
+       <item row="1" column="1" colspan="1"><widget class="QComboBox" name="cbGrupoInteresseField"/></item>
+
+       <item row="2" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string>Coluna do grupo outros</string></property></widget></item>
+       <item row="2" column="1" colspan="1"><widget class="QComboBox" name="cbGrupoOutriField"/></item>
+
+       <item row="3" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string></string></property></widget></item>
+
+       <item row="4" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string>Camada de sistema viário (linhas)</string></property></widget></item>
+       <item row="4" column="1" colspan="2"><widget class="QComboBox" name="cbNetworkLayer"/></item>
+
+       <item row="30" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string></string></property></widget></item>
+       <item row="31" column="0"><widget class="QLabel" name="lblNet"><property name="text"><string></string></property></widget></item>
+
+       <item row="111" column="0"><widget class="QCheckBox" name="chkBetweenness"><property name="text"><string>Compute betweenness (opcional)</string></property></widget></item>
+       <item row="111" column="1" colspan="2"><widget class="QCheckBox" name="chkBetweennessBidirectional"><property name="text"><string>Betweenness bidirecional</string></property><property name="enabled"><bool>false</bool></property></widget></item>
+
+       <item row="112" column="0"><widget class="QLabel" name="lblMetric"><property name="text"><string>Métrica</string></property></widget></item>
+       <item row="112" column="1"><widget class="QComboBox" name="cbMetric">
+          <item><property name="text"><string>ANGULAR</string></property></item>
+          <item><property name="text"><string>EUCLIDEAN</string></property></item>
+          <item><property name="text"><string>NORMAL</string></property></item>
+          </widget>
+        </item>
+
+       <item row="113" column="0"><widget class="QLabel" name="lblRadius"><property name="text"><string>Raio (m)</string></property></widget></item>
+       <item row="113" column="1"><widget class="QSpinBox" name="spinRadius"><property name="minimum"><number>0</number></property><property name="maximum"><number>1000000</number></property><property name="singleStep"><number>100</number></property><property name="value"><number>1600</number></property></widget></item>
+       <item row="113" column="2"><widget class="QWidget" name="wRadiusMode" native="true"><layout class="QHBoxLayout" name="hlRadiusMode">
+         <item><widget class="QRadioButton" name="rbBand"><property name="text"><string>Band radius</string></property><property name="checked"><bool>true</bool></property></widget></item>
+         <item><widget class="QRadioButton" name="rbContinuous"><property name="text"><string>Continuous space</string></property></widget></item>
+       </layout></widget></item>
+
+       <item row="114" column="0"><widget class="QLabel" name="lblWeighting"><property name="text"><string>Weighting</string></property></widget></item>
+       <item row="114" column="1"><widget class="QComboBox" name="cbWeighting">
+         <item><property name="text"><string>Link</string></property></item>
+         <item><property name="text"><string>Node</string></property></item>
+       </widget></item>
+
+       <item row="115" column="0"><widget class="QLabel" name="lblOriginW"><property name="text"><string>Origin weight (opcional)</string></property></widget></item>
+       <item row="115" column="1" colspan="2"><widget class="QComboBox" name="cbOriginWeight"><property name="editable"><bool>true</bool></property></widget></item>
+
+       <item row="116" column="0" colspan="3"><widget class="QLabel" name="lblDestTitle"><property name="text"><string>Destination weight (4 rodadas)</string></property></widget></item>
+       <item row="117" column="0"><widget class="QLabel" name="lblDW1"><property name="text"><string>1) GI — cenário existente</string></property></widget></item>
+       <item row="117" column="1" colspan="2"><widget class="QComboBox" name="cbDW1"><property name="editable"><bool>true</bool></property></widget></item>
+       <item row="118" column="0"><widget class="QLabel" name="lblDW2"><property name="text"><string>2) Outros — cenário existente</string></property></widget></item>
+       <item row="118" column="1" colspan="2"><widget class="QComboBox" name="cbDW2"><property name="editable"><bool>true</bool></property></widget></item>
+       <item row="119" column="0"><widget class="QLabel" name="lblDW3"><property name="text"><string>3) GI — não-segregação</string></property></widget></item>
+       <item row="119" column="1" colspan="2"><widget class="QComboBox" name="cbDW3"><property name="editable"><bool>true</bool></property></widget></item>
+       <item row="1110" column="0"><widget class="QLabel" name="lblDW4"><property name="text"><string>4) Outros — não-segregação</string></property></widget></item>
+       <item row="1110" column="1" colspan="2"><widget class="QComboBox" name="cbDW4"><property name="editable"><bool>true</bool></property></widget></item>
+
+      </layout>
+     </widget>
+     <!-- ================== sDNA ================== -->
+     <!-- ================== sDNA ================== -->
+
+
+
+
 
      <!-- ================== IMPORTAÇÃO ================== -->
      <widget class="QWidget" name="tabImport">
@@ -21,34 +87,11 @@
 
        <item>
         <layout class="QHBoxLayout" name="hlTop">
-         <item>
-          <widget class="QPushButton" name="btnAddRow">
-           <property name="text"><string>Adicionar linha</string></property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btnRemoveRows">
-           <property name="text"><string>Remover selecionadas</string></property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btnRefreshLayers">
-           <property name="text"><string>Atualizar lista de camadas</string></property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="spacer">
-           <property name="orientation"><enum>Qt::Horizontal</enum></property>
-           <property name="sizeHint" stdset="0">
-            <size><width>40</width><height>20</height></size>
-           </property>
-          </spacer>
-         </item>
-         <item>
-          <widget class="QPushButton" name="btnAddZips">
-           <property name="text"><string>Carregar ZIP(s)…</string></property>
-          </widget>
-         </item>
+         <item><widget class="QPushButton" name="btnAddRow"><property name="text"><string>Adicionar linha</string></property></widget></item>
+         <item><widget class="QPushButton" name="btnRemoveRows"><property name="text"><string>Remover selecionadas</string></property></widget></item>
+         <item><widget class="QPushButton" name="btnRefreshLayers"><property name="text"><string>Atualizar lista de camadas</string></property></widget></item>
+         <item><spacer name="spacer"><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
+         <item><widget class="QPushButton" name="btnAddZips"><property name="text"><string>Carregar ZIP(s)…</string></property></widget></item>
         </layout>
        </item>
 
@@ -58,16 +101,12 @@
          <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
          <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
          <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
-         <property name="columnCount"><number>8</number></property>
+         <property name="columnCount"><number>6</number></property>
          <property name="rowCount"><number>0</number></property>
-
-         <!-- Ordem: Shp1 | Colunas(shp1) | GI(shp1) | Outros(shp1) | Shp2 | Colunas(shp2) | GI(shp2) | Outros(shp2) -->
          <column><property name="text"><string>Shapefile 1 (polígonos)</string></property></column>
-         <column><property name="text"><string>Colunas (shp1)</string></property></column>
          <column><property name="text"><string>GI (shp1)</string></property></column>
          <column><property name="text"><string>Outros (shp1)</string></property></column>
          <column><property name="text"><string>Shapefile 2 (rede)</string></property></column>
-         <column><property name="text"><string>Colunas (shp2)</string></property></column>
          <column><property name="text"><string>GI (shp2)</string></property></column>
          <column><property name="text"><string>Outros (shp2)</string></property></column>
         </widget>
@@ -85,151 +124,7 @@
       </layout>
      </widget>
 
-     <!-- ================== sDNA ================== -->
-     <widget class="QWidget" name="tabSdna">
-      <attribute name="title"><string>sDNA</string></attribute>
-      <layout class="QGridLayout" name="gridSdna">
 
-       <item row="0" column="0">
-        <widget class="QLabel" name="lblNet">
-         <property name="text"><string>Camada de sistema viário (linhas)</string></property>
-        </widget>
-       </item>
-       <item row="0" column="1" colspan="2">
-        <widget class="QComboBox" name="cbNetworkLayer"/>
-       </item>
-
-       <item row="1" column="0">
-        <widget class="QCheckBox" name="chkBetweenness">
-         <property name="text"><string>Compute betweenness (opcional)</string></property>
-        </widget>
-       </item>
-       <item row="1" column="1" colspan="2">
-        <widget class="QCheckBox" name="chkBetweennessBidirectional">
-         <property name="text"><string>Betweenness bidirecional</string></property>
-         <property name="enabled"><bool>false</bool></property>
-        </widget>
-       </item>
-
-       <item row="2" column="0">
-        <widget class="QLabel" name="lblMetric">
-         <property name="text"><string>Métrica</string></property>
-        </widget>
-       </item>
-       <item row="2" column="1">
-        <widget class="QComboBox" name="cbMetric">
-         <item><property name="text"><string>ANGULAR</string></property></item>
-         <item><property name="text"><string>EUCLIDEAN</string></property></item>
-         <item><property name="text"><string>NORMAL</string></property></item>
-        </widget>
-       </item>
-
-       <item row="3" column="0">
-        <widget class="QLabel" name="lblRadius">
-         <property name="text"><string>Raio (m)</string></property>
-        </widget>
-       </item>
-       <item row="3" column="1">
-        <widget class="QSpinBox" name="spinRadius">
-         <property name="minimum"><number>0</number></property>
-         <property name="maximum"><number>1000000</number></property>
-         <property name="singleStep"><number>100</number></property>
-         <property name="value"><number>1600</number></property>
-        </widget>
-       </item>
-       <item row="3" column="2">
-        <widget class="QWidget" name="wRadiusMode" native="true">
-         <layout class="QHBoxLayout" name="hlRadiusMode">
-          <item>
-           <widget class="QRadioButton" name="rbBand">
-            <property name="text"><string>Band radius</string></property>
-            <property name="checked"><bool>true</bool></property>
-           </widget>
-          </item>
-          <item>
-           <widget class="QRadioButton" name="rbContinuous">
-            <property name="text"><string>Continuous space</string></property>
-           </widget>
-          </item>
-         </layout>
-        </widget>
-       </item>
-
-       <item row="4" column="0">
-        <widget class="QLabel" name="lblWeighting">
-         <property name="text"><string>Weighting</string></property>
-        </widget>
-       </item>
-       <item row="4" column="1">
-        <widget class="QComboBox" name="cbWeighting">
-         <item><property name="text"><string>Link</string></property></item>
-         <item><property name="text"><string>Node</string></property></item>
-        </widget>
-       </item>
-
-       <item row="5" column="0">
-        <widget class="QLabel" name="lblOriginW">
-         <property name="text"><string>Origin weight (opcional)</string></property>
-        </widget>
-       </item>
-       <item row="5" column="1" colspan="2">
-        <widget class="QComboBox" name="cbOriginWeight">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="6" column="0" colspan="3">
-        <widget class="QLabel" name="lblDestTitle">
-         <property name="text"><string>Destination weight (4 rodadas)</string></property>
-        </widget>
-       </item>
-
-       <item row="7" column="0">
-        <widget class="QLabel" name="lblDW1">
-         <property name="text"><string>1) GI — cenário existente</string></property>
-        </widget>
-       </item>
-       <item row="7" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW1">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="8" column="0">
-        <widget class="QLabel" name="lblDW2">
-         <property name="text"><string>2) Outros — cenário existente</string></property>
-        </widget>
-       </item>
-       <item row="8" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW2">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="9" column="0">
-        <widget class="QLabel" name="lblDW3">
-         <property name="text"><string>3) GI — não-segregação</string></property>
-        </widget>
-       </item>
-       <item row="9" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW3">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="10" column="0">
-        <widget class="QLabel" name="lblDW4">
-         <property name="text"><string>4) Outros — não-segregação</string></property>
-        </widget>
-       </item>
-       <item row="10" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW4">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-      </layout>
-     </widget>
 
     </widget>
    </item>
@@ -246,29 +141,16 @@
    <item>
     <widget class="QDialogButtonBox" name="button_box">
      <property name="orientation"><enum>Qt::Horizontal</enum></property>
-     <property name="standardButtons">
-      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
-     </property>
+     <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
      <property name="centerButtons"><bool>true</bool></property>
     </widget>
    </item>
-
   </layout>
  </widget>
 
  <resources/>
  <connections>
-  <connection>
-   <sender>button_box</sender>
-   <signal>accepted()</signal>
-   <receiver>ChasmDialogBase</receiver>
-   <slot>accept()</slot>
-  </connection>
-  <connection>
-   <sender>button_box</sender>
-   <signal>rejected()</signal>
-   <receiver>ChasmDialogBase</receiver>
-   <slot>reject()</slot>
-  </connection>
+  <connection><sender>button_box</sender><signal>accepted()</signal><receiver>ChasmDialogBase</receiver><slot>accept()</slot></connection>
+  <connection><sender>button_box</sender><signal>rejected()</signal><receiver>ChasmDialogBase</receiver><slot>reject()</slot></connection>
  </connections>
 </ui>

@@ -254,6 +254,24 @@ class ChasmDialog(QDialog, FORM_CLASS):
         if sel >= 0:
             self.cbNetworkLayer.setCurrentIndex(sel)
 
+        if not hasattr(self, 'cbPoligonoLayer'): return
+        cur = self.cbPoligonoLayer.currentText() if self.cbPoligonoLayer.count() else None
+        self.cbPoligonoLayer.clear()
+        sel = -1
+        for lyr in QgsProject.instance().mapLayers().values():
+            try:
+                if QgsWkbTypes.geometryType(lyr.wkbType()) == QgsWkbTypes.PolygonGeometry:
+                    self.cbPoligonoLayer.addItem(lyr.name(), lyr.id())
+                    if cur and lyr.name() == cur and sel < 0:
+                        sel = self.cbPoligonoLayer.count() - 1
+            except Exception:
+                continue
+        if sel >= 0:
+            self.cbPoligonoLayer.setCurrentIndex(sel)           
+           
+           
+
+
     def _populate_attribute_combos_network(self):
         pass
 

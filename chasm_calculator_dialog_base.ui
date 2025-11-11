@@ -3,21 +3,20 @@
  <class>ChasmDialogBase</class>
  <widget class="QDialog" name="ChasmDialogBase">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>1000</width><height>760</height></rect>
+   <rect><x>0</x><y>0</y><width>700</width><height>500</height></rect>
   </property>
   <property name="windowTitle">
    <string>Chasm Calculator</string>
   </property>
-  <layout class="QVBoxLayout" name="verticalLayout">
 
+  <layout class="QVBoxLayout" name="verticalLayout">
    <item>
     <widget class="QTabWidget" name="tabWidget">
-
-     <!-- ================== sDNA ================== -->
      <widget class="QWidget" name="tabSdna">
       <attribute name="title"><string>sDNA</string></attribute>
       <layout class="QGridLayout" name="gridSdna">
 
+       <!-- Polígonos -->
        <item row="0" column="0"><widget class="QLabel"><property name="text"><string>Camada Setores (Polígonos)</string></property></widget></item>
        <item row="0" column="1" colspan="2"><widget class="QComboBox" name="cbPoligonoLayer"/></item>
 
@@ -27,32 +26,37 @@
        <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Coluna do grupo outros</string></property></widget></item>
        <item row="2" column="1" colspan="2"><widget class="QComboBox" name="cbGrupoOutriField"/></item>
 
-       <item row="3" column="0"><widget class="QLabel"><property name="text"><string></string></property></widget></item>
+       <!-- Rede -->
+       <item row="3" column="0"><widget class="QLabel"><property name="text"><string>Camada de sistema viário (linhas)</string></property></widget></item>
+       <item row="3" column="1" colspan="2"><widget class="QComboBox" name="cbNetworkLayer"/></item>
 
-       <item row="4" column="0"><widget class="QLabel"><property name="text"><string>Camada de sistema viário (linhas)</string></property></widget></item>
-       <item row="4" column="1" colspan="2"><widget class="QComboBox" name="cbNetworkLayer"/></item>
-
-       <!-- botão Fragmentar -->
-       <item row="5" column="0" colspan="3">
+       <!-- Botão -->
+       <item row="4" column="0" colspan="3">
         <widget class="QPushButton" name="btnFragmentLines">
          <property name="text"><string>Fragmentar linhas por polígonos</string></property>
          <property name="toolTip"><string>Corta a camada de linhas pelos polígonos e cria uma nova camada com o campo 'cod_setor'.</string></property>
         </widget>
        </item>
 
-       <item row="6" column="0"><widget class="QCheckBox" name="chkBetweenness"><property name="text"><string>Compute betweenness (opcional)</string></property></widget></item>
-       <item row="6" column="1" colspan="2"><widget class="QCheckBox" name="chkBetweennessBidirectional"><property name="text"><string>Betweenness bidirecional</string></property><property name="enabled"><bool>false</bool></property></widget></item>
+       <!-- Parâmetros -->
+       <item row="5" column="0"><widget class="QCheckBox" name="chkBetweenness"><property name="text"><string>Compute betweenness (opcional)</string></property></widget></item>
+       <item row="5" column="1" colspan="2"><widget class="QCheckBox" name="chkBetweennessBidirectional"><property name="text"><string>Betweenness bidirecional</string></property><property name="enabled"><bool>false</bool></property></widget></item>
 
-       <item row="7" column="0"><widget class="QLabel"><property name="text"><string>Métrica</string></property></widget></item>
-       <item row="7" column="1"><widget class="QComboBox" name="cbMetric">
+       <item row="6" column="0"><widget class="QLabel"><property name="text"><string>Métrica</string></property></widget></item>
+       <item row="6" column="1"><widget class="QComboBox" name="cbMetric">
          <item><property name="text"><string>ANGULAR</string></property></item>
          <item><property name="text"><string>EUCLIDEAN</string></property></item>
          <item><property name="text"><string>NORMAL</string></property></item>
        </widget></item>
 
-       <item row="8" column="0"><widget class="QLabel"><property name="text"><string>Raio (m)</string></property></widget></item>
-       <item row="8" column="1"><widget class="QSpinBox" name="spinRadius"><property name="minimum"><number>0</number></property><property name="maximum"><number>1000000</number></property><property name="singleStep"><number>100</number></property><property name="value"><number>1600</number></property></widget></item>
-       <item row="8" column="2">
+       <item row="7" column="0"><widget class="QLabel"><property name="text"><string>Raio (m)</string></property></widget></item>
+       <item row="7" column="1"><widget class="QSpinBox" name="spinRadius">
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>1000000</number></property>
+         <property name="singleStep"><number>100</number></property>
+         <property name="value"><number>1600</number></property>
+       </widget></item>
+       <item row="7" column="2">
         <widget class="QWidget" native="true">
          <layout class="QHBoxLayout" name="hlRadiusMode">
           <item><widget class="QRadioButton" name="rbBand"><property name="text"><string>Band radius</string></property><property name="checked"><bool>true</bool></property></widget></item>
@@ -61,84 +65,21 @@
         </widget>
        </item>
 
-       <item row="9" column="0"><widget class="QLabel"><property name="text"><string>Weighting</string></property></widget></item>
-       <item row="9" column="1"><widget class="QComboBox" name="cbWeighting">
+       <item row="8" column="0"><widget class="QLabel"><property name="text"><string>Weighting</string></property></widget></item>
+       <item row="8" column="1"><widget class="QComboBox" name="cbWeighting">
          <item><property name="text"><string>Link</string></property></item>
          <item><property name="text"><string>Node</string></property></item>
        </widget></item>
 
-       <item row="10" column="0"><widget class="QLabel"><property name="text"><string>Origin weight (opcional)</string></property></widget></item>
-       <item row="10" column="1" colspan="2"><widget class="QComboBox" name="cbOriginWeight"><property name="editable"><bool>true</bool></property></widget></item>
-
-       <item row="11" column="0" colspan="3"><widget class="QLabel" name="lblDestTitle"><property name="text"><string>Destination weight (4 rodadas)</string></property></widget></item>
-
-       <item row="12" column="0"><widget class="QLabel" name="lblDW1"><property name="text"><string>1) GI — cenário existente</string></property></widget></item>
-       <item row="12" column="1" colspan="2"><widget class="QComboBox" name="cbDW1"><property name="editable"><bool>true</bool></property></widget></item>
-
-       <item row="13" column="0"><widget class="QLabel" name="lblDW2"><property name="text"><string>2) Outros — cenário existente</string></property></widget></item>
-       <item row="13" column="1" colspan="2"><widget class="QComboBox" name="cbDW2"><property name="editable"><bool>true</bool></property></widget></item>
-
-       <item row="14" column="0"><widget class="QLabel" name="lblDW3"><property name="text"><string>3) GI — não-segregação</string></property></widget></item>
-       <item row="14" column="1" colspan="2"><widget class="QComboBox" name="cbDW3"><property name="editable"><bool>true</bool></property></widget></item>
-
-       <item row="15" column="0"><widget class="QLabel" name="lblDW4"><property name="text"><string>4) Outros — não-segregação</string></property></widget></item>
-       <item row="15" column="1" colspan="2"><widget class="QComboBox" name="cbDW4"><property name="editable"><bool>true</bool></property></widget></item>
+       <item row="9" column="0"><widget class="QLabel"><property name="text"><string>Origin weight (opcional)</string></property></widget></item>
+       <item row="9" column="1" colspan="2"><widget class="QComboBox" name="cbOriginWeight"><property name="editable"><bool>true</bool></property></widget></item>
 
       </layout>
      </widget>
-     <!-- ================== /sDNA ================== -->
-
-     <!-- ================== Importação ================== -->
-     <widget class="QWidget" name="tabImport">
-      <attribute name="title"><string>Importação</string></attribute>
-      <layout class="QVBoxLayout" name="vlImport">
-
-       <item>
-        <layout class="QHBoxLayout" name="hlTop">
-         <item><widget class="QPushButton" name="btnAddRow"><property name="text"><string>Adicionar linha</string></property></widget></item>
-         <item><widget class="QPushButton" name="btnRemoveRows"><property name="text"><string>Remover selecionadas</string></property></widget></item>
-         <item><widget class="QPushButton" name="btnRefreshLayers"><property name="text"><string>Atualizar lista de camadas</string></property></widget></item>
-         <item><spacer name="spacer"><property name="orientation"><enum>Qt::Horizontal</enum></property></spacer></item>
-         <item><widget class="QPushButton" name="btnAddZips"><property name="text"><string>Carregar ZIP(s)…</string></property></widget></item>
-        </layout>
-       </item>
-
-       <item>
-        <widget class="QTableWidget" name="tblPairs">
-         <property name="alternatingRowColors"><bool>true</bool></property>
-         <property name="selectionBehavior"><enum>QAbstractItemView::SelectRows</enum></property>
-         <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
-         <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
-         <property name="columnCount"><number>8</number></property>
-         <property name="rowCount"><number>0</number></property>
-         <column><property name="text"><string>Shapefile 1 (polígonos)</string></property></column>
-         <column><property name="text"><string>Colunas (shp1)</string></property></column>
-         <column><property name="text"><string>GI (shp1)</string></property></column>
-         <column><property name="text"><string>Outros (shp1)</string></property></column>
-         <column><property name="text"><string>Shapefile 2 (rede)</string></property></column>
-         <column><property name="text"><string>Colunas (shp2)</string></property></column>
-         <column><property name="text"><string>GI (shp2)</string></property></column>
-         <column><property name="text"><string>Outros (shp2)</string></property></column>
-        </widget>
-       </item>
-
-       <item>
-        <widget class="QPlainTextEdit" name="txtStatusImport">
-         <property name="readOnly"><bool>true</bool></property>
-         <property name="placeholderText"><string>Status...</string></property>
-         <property name="maximumBlockCount"><number>500</number></property>
-         <property name="minimumHeight"><number>90</number></property>
-        </widget>
-       </item>
-
-      </layout>
-     </widget>
-     <!-- ================== /Importação ================== -->
-
     </widget>
    </item>
 
-   <!-- Status global no rodapé (único) -->
+   <!-- Status -->
    <item>
     <widget class="QPlainTextEdit" name="txtStatus">
      <property name="readOnly"><bool>true</bool></property>
@@ -148,6 +89,7 @@
     </widget>
    </item>
 
+   <!-- Botões -->
    <item>
     <widget class="QDialogButtonBox" name="button_box">
      <property name="orientation"><enum>Qt::Horizontal</enum></property>
@@ -155,13 +97,22 @@
      <property name="centerButtons"><bool>true</bool></property>
     </widget>
    </item>
-
   </layout>
  </widget>
 
  <resources/>
  <connections>
-  <connection><sender>button_box</sender><signal>accepted()</signal><receiver>ChasmDialogBase</receiver><slot>accept()</slot></connection>
-  <connection><sender>button_box</sender><signal>rejected()</signal><receiver>ChasmDialogBase</receiver><slot>reject()</slot></connection>
+  <connection>
+   <sender>button_box</sender>
+   <signal>accepted()</signal>
+   <receiver>ChasmDialogBase</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>button_box</sender>
+   <signal>rejected()</signal>
+   <receiver>ChasmDialogBase</receiver>
+   <slot>reject()</slot>
+  </connection>
  </connections>
 </ui>

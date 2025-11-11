@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-import os, zipfile, tempfile, shutil
+import os
 from qgis.PyQt import uic
-from qgis.PyQt.QtWidgets import QDialog, QFileDialog, QComboBox
+from qgis.PyQt.QtWidgets import QDialog, QComboBox, QTableWidget
+from qgis.PyQt.QtCore import QVariant
 from qgis.core import QgsProject, QgsWkbTypes, QgsVectorLayer, QgsMessageLog, Qgis
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'chasm_calculator_dialog_base.ui'
 ))
 
-# índices das colunas
+# índices das colunas (mantidos p/ compatibilidade)
 SHP1_COL  = 0
 COLS1_COL = 1
 GI1_COL   = 2
@@ -28,32 +29,34 @@ class ChasmDialog(QDialog, FORM_CLASS):
         # widgets
         self.tbl = getattr(self, 'tblPairs', None)
         if self.tbl is None:
-            raise AttributeError("UI precisa ter QTableWidget com objectName='tblPairs'")
+            # cria uma tabela oculta para manter compatibilidade com o código existente
+            self.tbl = QTableWidget(self)
+            self.tbl.setObjectName('tblPairs')
+            self.tbl.setVisible(False)
+
         self.txtStatus        = getattr(self, 'txtStatus', None)
         self.btnAddRow        = getattr(self, 'btnAddRow', None)
         self.btnRemoveRows    = getattr(self, 'btnRemoveRows', None)
         self.btnRefreshLayers = getattr(self, 'btnRefreshLayers', None)
-        self.btnAddZips       = getattr(self, 'btnAddZips', None)
+        # btnAddZips REMOVIDO
 
         # tabela
         self._ensure_pairs_table()
 
-        # botões
+        # botões (apenas os que eventualmente existirem no .ui)
         if self.btnAddRow:        self.btnAddRow.clicked.connect(self.on_add_row)
         if self.btnRemoveRows:    self.btnRemoveRows.clicked.connect(self.on_remove_rows)
         if self.btnRefreshLayers: self.btnRefreshLayers.clicked.connect(self.refresh_all_layer_combos)
-        if self.btnAddZips:       self.btnAddZips.clicked.connect(self.on_add_zips)
 
         # sDNA
         if hasattr(self, 'chkBetweenness'):
             self.chkBetweenness.toggled.connect(self._toggle_betweenness_children)
 
-        # Combos de rede (linhas) e polígonos (se existirem no .ui)
+        # Combos de rede (linhas) e polígonos
         self._populate_network_layers()
         if hasattr(self, 'cbNetworkLayer'):
             self.cbNetworkLayer.currentIndexChanged.connect(self._populate_attribute_combos_network)
 
-        # Se existir um combo opcional para ID de polígono, mantemos sincronizado
         if hasattr(self, 'cbPoligonoLayer'):
             self.cbPoligonoLayer.currentIndexChanged.connect(self._on_polygon_layer_combo_changed)
             self._on_polygon_layer_combo_changed()
@@ -61,10 +64,10 @@ class ChasmDialog(QDialog, FORM_CLASS):
         if hasattr(self, 'cbMetric'):    self.cbMetric.setCurrentText("ANGULAR")
         if hasattr(self, 'cbWeighting'): self.cbWeighting.setCurrentText("Link")
 
-        # Preenche Origin/Dest weights agora (evita ficar vazio na 1ª abertura)
+        # Preenche combos de atributos da rede
         self._populate_attribute_combos_network()
 
-        self._append_status("Dialog pronto. Use 'Adicionar linha' e escolha as camadas.")
+        self._append_status("Pronto. Use as combos de camadas já carregadas no projeto QGIS.")
 
     # ---------- util ----------
     def _append_status(self, msg: str):
@@ -81,7 +84,8 @@ class ChasmDialog(QDialog, FORM_CLASS):
             "Shapefile 1 (polígonos)", "Colunas (shp1)", "GI (shp1)", "Outros (shp1)",
             "Shapefile 2 (rede)",     "Colunas (shp2)", "GI (shp2)", "Outros (shp2)"
         ])
-        self.tbl.horizontalHeader().setStretchLastSection(True)
+        if self.tbl.horizontalHeader():
+            self.tbl.horizontalHeader().setStretchLastSection(True)
 
     # cria (ou recupera) um QComboBox numa célula
     def _ensure_cell_combo(self, row: int, col: int, editable: bool) -> QComboBox:
@@ -132,7 +136,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
 
     # ---------- popular campos ----------
     def _on_layer_changed(self, row: int, which: int):
-        # garanta que TODOS os combos existem
         cmb_layer = self._ensure_cell_combo(row, SHP1_COL if which == 1 else SHP2_COL, False)
         cmb_gi    = self._ensure_cell_combo(row, GI1_COL  if which == 1 else GI2_COL, True)
         cmb_go    = self._ensure_cell_combo(row, GO1_COL  if which == 1 else GO2_COL, True)
@@ -197,53 +200,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
         combo.blockSignals(False)
         return count_added > 0
 
-    # ---------- ZIP ----------
-    def on_add_zips(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Selecionar ZIP(s)", "", "Arquivos ZIP (*.zip)")
-        if not paths: return
-        added = 0
-        for p in paths:
-            if not os.path.isfile(p): continue
-            with zipfile.ZipFile(p, 'r') as z:
-                for name in z.namelist():
-                    if name.lower().endswith('.shp') and not name.endswith('/'):
-                        lyr = self._load_layer_from_zip(p, name)
-                        if lyr: added += 1
-        self._append_status(f"{added} camada(s) carregada(s) de ZIP(s).")
-        self.refresh_all_layer_combos()
-
-    def _load_layer_from_zip(self, zip_path: str, shp_inside: str):
-        norm_zip = os.path.normpath(zip_path).replace('\\', '/')
-        vsi_path = f"/vsizip/{norm_zip}/{shp_inside}"
-        layer_name = os.path.splitext(os.path.basename(shp_inside))[0]
-        v = QgsVectorLayer(vsi_path, layer_name, "ogr")
-        if v and v.isValid() and len(v.fields()) > 0:
-            QgsProject.instance().addMapLayer(v)
-            return v
-
-        base = os.path.splitext(shp_inside)[0]
-        exts = ('.shp', '.dbf', '.shx', '.prj', '.cpg', '.qpj', '.shp.xml')
-        tmp = tempfile.mkdtemp(prefix="chasm_zip_")
-        main = None
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as z:
-                members = set(z.namelist())
-                for ext in exts:
-                    name = base + ext
-                    if name in members:
-                        out = os.path.join(tmp, os.path.basename(name))
-                        with z.open(name) as src, open(out, 'wb') as dst:
-                            shutil.copyfileobj(src, dst)
-                        if ext == '.shp': main = out
-            if not main: return None
-            v2 = QgsVectorLayer(main, layer_name, "ogr")
-            if v2 and v2.isValid() and len(v2.fields()) > 0:
-                QgsProject.instance().addMapLayer(v2)
-                return v2
-        except Exception as e:
-            QgsMessageLog.logMessage(f"ZIP fallback erro: {e}", "Chasm", Qgis.Critical)
-        return None
-
     # ---------- sDNA ----------
     def _toggle_betweenness_children(self, checked: bool):
         if hasattr(self, 'chkBetweennessBidirectional'):
@@ -284,11 +240,9 @@ class ChasmDialog(QDialog, FORM_CLASS):
 
     def _populate_attribute_combos_network(self):
         """
-        Preenche Origin/Destination Weight combos com os campos da camada de rede selecionada.
-        Deixa os combos editáveis e coloca defaults:
-          g_in_exist, g_ou_exist, g_int_ns, g_ou_ns
+        Preenche Destination Weights (se existirem) com os campos da camada de rede.
+        Defaults: g_in_exist, g_ou_exist, g_int_ns, g_ou_ns.
         """
-        # só roda se os combos existirem no .ui
         if not all(hasattr(self, n) for n in ("cbDW1", "cbDW2", "cbDW3", "cbDW4")):
             return
 
@@ -300,45 +254,83 @@ class ChasmDialog(QDialog, FORM_CLASS):
             combo.blockSignals(True)
             combo.clear()
             for n in names: combo.addItem(n)
-            combo.setEditable(True)  # permite digitar valores/nomes de campos
+            combo.setEditable(True)
             if preferred:
                 ix = combo.findText(preferred)
                 combo.setCurrentIndex(ix if ix >= 0 else -1)
-                if ix < 0:
-                    combo.setEditText(preferred)
-                else:
-                    combo.setCurrentText(preferred) 
+                if ix < 0: combo.setEditText(preferred)
             combo.blockSignals(False)
 
-        # Origin weight (opcional)
         if hasattr(self, "cbOriginWeight"):
             fill(self.cbOriginWeight, "")
 
-        # Destination weights (4 rodadas)
         fill(self.cbDW1, "g_in_exist")
         fill(self.cbDW2, "g_ou_exist")
         fill(self.cbDW3, "g_int_ns")
         fill(self.cbDW4, "g_ou_ns")
 
-    # --- suporte a ID do polígono (para fragmentação) ---
-    def _on_polygon_layer_combo_changed(self):
-        """
-        Se existir o combo opcional cbPoligonoIdField, ele é populado com os campos
-        da camada de polígono selecionada e tenta selecionar automaticamente 'id/gid/fid'.
-        """
-        if not hasattr(self, 'cbPoligonoLayer') or not hasattr(self, 'cbPoligonoIdField'):
+    # ===== helpers de campos =====
+    def _fill_field_combo(self, combo: QComboBox, layer: QgsVectorLayer,
+                          only_types=(QVariant.String, QVariant.Int, QVariant.LongLong, QVariant.Double),
+                          placeholder="(sem campos compatíveis)"):
+        if combo is None:
             return
+        combo.blockSignals(True)
+        combo.clear()
+        if layer and layer.isValid():
+            for f in layer.fields():
+                try:
+                    if f.type() in only_types:
+                        combo.addItem(f.name(), f.name())
+                except Exception:
+                    continue
+        if combo.count() == 0:
+            combo.addItem(placeholder, None)
+        combo.blockSignals(False)
+
+    # --- suporte a ID do polígono e campos de grupo ---
+    def _on_polygon_layer_combo_changed(self):
+        if not hasattr(self, 'cbPoligonoLayer'):
+            return
+
         lyr = self._current_layer_from_combo(self.cbPoligonoLayer)
-        self.cbPoligonoIdField.blockSignals(True)
-        self.cbPoligonoIdField.clear()
-        if lyr and lyr.isValid():
-            names = [f.name() for f in lyr.fields()]
-            for n in names: self.cbPoligonoIdField.addItem(n)
-            pick = self._auto_pick_polygon_id_field(lyr)
-            if pick:
-                ix = self.cbPoligonoIdField.findText(pick)
-                if ix >= 0: self.cbPoligonoIdField.setCurrentIndex(ix)
-        self.cbPoligonoIdField.blockSignals(False)
+
+        # 1) ID do polígono
+        if hasattr(self, 'cbPoligonoIdField'):
+            self.cbPoligonoIdField.blockSignals(True)
+            self.cbPoligonoIdField.clear()
+            if lyr and lyr.isValid():
+                names = [f.name() for f in lyr.fields()]
+                for n in names:
+                    self.cbPoligonoIdField.addItem(n, n)
+                pick = self._auto_pick_polygon_id_field(lyr)
+                if pick:
+                    ix = self.cbPoligonoIdField.findText(pick)
+                    if ix >= 0:
+                        self.cbPoligonoIdField.setCurrentIndex(ix)
+            self.cbPoligonoIdField.blockSignals(False)
+
+        # 2) Campos de grupo
+        grp_int = getattr(self, 'cbGrupoInteresseField', None)
+        grp_out = getattr(self, 'cbGrupoOutriField',    None)
+
+        for combo in (grp_int, grp_out):
+            if combo is not None:
+                self._fill_field_combo(combo, lyr)
+
+        def _try_pick(combo: QComboBox, *candidates):
+            if combo is None or combo.count() == 0:
+                return
+            for cand in candidates:
+                ix = combo.findText(cand)
+                if ix >= 0:
+                    combo.setCurrentIndex(ix)
+                    return
+            if combo.currentIndex() < 0 and combo.count() > 0:
+                combo.setCurrentIndex(0)
+
+        _try_pick(grp_int, "grupo_interesse", "gi", "GI")
+        _try_pick(grp_out, "grupo_outros", "go", "GO")
 
     def _auto_pick_polygon_id_field(self, poly_layer):
         candidate_names = ['id', 'ID', 'gid', 'fid']
@@ -373,7 +365,7 @@ class ChasmDialog(QDialog, FORM_CLASS):
     # === Métodos esperados pelo chasm_calculator.py ===
     def selected_inputs(self):
         """
-        Lê a tabela e devolve uma lista de dicts:
+        Lê a tabela e devolve uma lista de dicts (mantido p/ compatibilidade):
         {
           'layer1_id': <polígono>, 'gi1': <texto>, 'go1': <texto>,
           'layer2_id': <linha>,    'gi2': <texto>, 'go2': <texto>,
@@ -413,38 +405,23 @@ class ChasmDialog(QDialog, FORM_CLASS):
         return results
 
     def selected_network_layer(self):
-        """Retorna a camada de rede (linhas) da combo cbNetworkLayer, se existir."""
         if hasattr(self, 'cbNetworkLayer') and self.cbNetworkLayer.count():
             lyr_id = self.cbNetworkLayer.currentData()
             return QgsProject.instance().mapLayer(lyr_id) if lyr_id else None
         return None
 
     def sdna_params(self):
-        """
-        Retorna dict com parâmetros para o run():
-        - betweenness (bool)
-        - betw_bidirectional (bool)
-        - metric (str)
-        - radius (int/float)
-        - radius_mode ('band' | 'radius')
-        - weighting (str)
-        - origin_weight (str)
-        - dest_weights (list[str]) -> 4 itens (cbDW1..cbDW4)
-        """
         bet = bool(getattr(self, 'chkBetweenness', None).isChecked()) if hasattr(self, 'chkBetweenness') else False
         betw_bi = bool(getattr(self, 'chkBetweennessBidirectional', None).isChecked()) if hasattr(self, 'chkBetweennessBidirectional') else False
         metric = self.cbMetric.currentText().strip() if hasattr(self, 'cbMetric') else "ANGULAR"
         weighting = self.cbWeighting.currentText().strip() if hasattr(self, 'cbWeighting') else ""
 
-        # == lê DWs com a MESMA lógica do _dw_values_or_log ==
-        dw_vals = self._dw_values_or_log()          # já loga "DW lidos (UI OK): [...]" quando possível
+        dw_vals = self._dw_values_or_log()
         dw1, dw2, dw3, dw4 = (dw_vals + ["", "", "", ""])[:4]
         dest_weights = [dw1, dw2, dw3, dw4]
 
-        # Origin weight pela mesma regra (LineEdit ou ComboBox)
         origin_weight = self._read_text_like_combo(getattr(self, 'cbOriginWeight', None))
 
-        # raio
         radius = 1000
         for name in ('spnRadius', 'spinRadius', 'sbRadius', 'spinRadius'):
             if hasattr(self, name):
@@ -454,12 +431,10 @@ class ChasmDialog(QDialog, FORM_CLASS):
                 except Exception:
                     pass
 
-        # modo de raio
         radius_mode = "band"
         if hasattr(self, 'rbContinuous') and self.rbContinuous.isChecked():
             radius_mode = "radius"
 
-        # log curto adicional (opcional)
         try:
             self._append_status(f"DW lidos: {dest_weights}")
         except Exception:
@@ -476,21 +451,16 @@ class ChasmDialog(QDialog, FORM_CLASS):
             "dest_weights": dest_weights
         }
 
-
     def _read_text_like_combo(self, w):
-        """Lê texto de QLineEdit OU QComboBox (editável ou não)."""
         if w is None:
             return ""
         try:
-            # QLineEdit?
             if hasattr(w, "text"):
                 return (w.text() or "").strip()
-            # QComboBox editável?
             if hasattr(w, "lineEdit") and callable(w.lineEdit):
                 le = w.lineEdit()
                 if le is not None:
                     return (le.text() or "").strip()
-            # QComboBox não editável
             if hasattr(w, "currentText"):
                 return (w.currentText() or "").strip()
         except Exception:
@@ -518,9 +488,9 @@ class ChasmDialog(QDialog, FORM_CLASS):
         else:
             self._append_status(f"DW lidos (UI OK): {vals}")
         return vals
-    # ====== Suporte específico para a FRAGMENTAÇÃO ======
+
+    # ====== Suporte à fragmentação ======
     def selected_line_layer_id(self):
-        """Usa cbNetworkLayer (linhas) se existir; caso contrário, pega a 1ª camada de linhas do projeto."""
         if hasattr(self, 'cbNetworkLayer') and self.cbNetworkLayer.count():
             return self.cbNetworkLayer.currentData()
         for lyr in QgsProject.instance().mapLayers().values():
@@ -532,7 +502,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
         return None
 
     def selected_polygon_layer_id(self):
-        """Usa cbPoligonoLayer (polígonos) se existir; caso contrário, pega a 1ª camada de polígonos do projeto."""
         if hasattr(self, 'cbPoligonoLayer') and self.cbPoligonoLayer.count():
             return self.cbPoligonoLayer.currentData()
         for lyr in QgsProject.instance().mapLayers().values():
@@ -544,10 +513,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
         return None
 
     def selected_polygon_id_field(self):
-        """
-        Se existir o combo cbPoligonoIdField no .ui, usa o valor dele.
-        Senão, autodetecta: 'id', 'ID', 'gid', 'fid' ou o primeiro campo do polígono selecionado.
-        """
         poly_layer = None
         if hasattr(self, 'cbPoligonoLayer') and self.cbPoligonoLayer.count():
             poly_layer = self._current_layer_from_combo(self.cbPoligonoLayer)

@@ -142,26 +142,29 @@ class Chasm:
         return names[0] if names else None
 
     # ------------------------------ Fragmentação (Processamento) ------------------------------
+
     def fragment_lines_by_polygons(self, line_layer, poly_layer, poly_id_field,
-                            out_field_name="cod_setor",
-                            poly_group_interest_field="grupo_interesse",
-                            poly_group_others_field="grupo_outros"):
+                        out_field_name="cod_setor",
+                        poly_group_interest_field="grupo_interesse",
+                        poly_group_others_field="grupo_outros"):
         """
         Fragmenta linhas pelos polígonos e:
         • copia o identificador do setor para as linhas (out_field_name),
         • cria length_m e line_sector_id = "{id}_{out_field_name}",
         • distribui grupos proporcionalmente ao comprimento (g_in_exist / g_ou_exist);
         quando o setor não tiver GI/GO, grava 0.0 (não deixa NULL),
-        • sempre escreve cenário não segregado (g_int_ns / g_ou_ns) usando proporção global,
+        • escreve cenário de não-segregação (g_int_ns / g_ou_ns) usando proporção global
+        e o total do setor (QG_j),
         • escreve nos polígonos a soma por setor (g_in_sum / g_ou_sum),
-        • LOGA no painel de mensagens os valores atribuídos por segmento.
+        • LOGA no painel de mensagens os valores atribuídos por segmento,
+        • (NOVO) comp_line (comprimento do segmento) e comp_max_setor (máximo do setor).
         """
         import processing
-        from qgis.core import QgsMessageLog, QgsField
+        from qgis.core import QgsMessageLog, QgsField, QgsWkbTypes, Qgis, QgsProject
+        # QVariant já está importado no topo do arquivo (qgis.PyQt.QtCore)
 
         if line_layer is None or poly_layer is None:
             raise RuntimeError("Camadas de linha e polígono são obrigatórias.")
-        from qgis.core import QgsWkbTypes, Qgis
         if QgsWkbTypes.geometryType(line_layer.wkbType()) != QgsWkbTypes.LineGeometry:
             raise RuntimeError(f"A camada '{line_layer.name()}' não é de linhas.")
         if QgsWkbTypes.geometryType(poly_layer.wkbType()) != QgsWkbTypes.PolygonGeometry:
@@ -241,25 +244,19 @@ class Chasm:
             "chasm_calculator", Qgis.Info
         )
 
-        # Mapa setor -> (GI_total, GO_total)
+        # Totais por setor (GI, GO) — para EXISTENTE e para QG_j (NS)
         group_totals = {}
         if has_gi or has_go:
             for pf in fixed_polys.getFeatures():
                 sid_key = "" if pf[poly_id_field] is None else str(pf[poly_id_field]).strip()
-                gi_v = None
-                go_v = None
-                if has_gi:
-                    try: gi_v = float(pf[poly_group_interest_field]) if pf[poly_group_interest_field] is not None else None
-                    except Exception: gi_v = None
-                if has_go:
-                    try: go_v = float(pf[poly_group_others_field]) if pf[poly_group_others_field] is not None else None
-                    except Exception: go_v = None
+                gi_v = float(pf[poly_group_interest_field]) if has_gi and pf[poly_group_interest_field] is not None else 0.0
+                go_v = float(pf[poly_group_others_field])   if has_go and pf[poly_group_others_field]   is not None else 0.0
                 group_totals[sid_key] = (gi_v, go_v)
 
-        # Soma de comprimentos por setor
+        # Somatórios e máximos de comprimento por setor
         setor_idx = with_concat.fields().indexOf(out_field_name)
         len_idx   = with_concat.fields().indexOf("length_m")
-        sector_len_sum = {}
+        sector_len_sum, sector_len_max = {}, {}
         for f in with_concat.getFeatures():
             sid_key = "" if f[setor_idx] is None else str(f[setor_idx]).strip()
             try:
@@ -267,28 +264,29 @@ class Chasm:
             except Exception:
                 l = 0.0
             sector_len_sum[sid_key] = sector_len_sum.get(sid_key, 0.0) + l
+            sector_len_max[sid_key] = max(sector_len_max.get(sid_key, 0.0), l)
 
         # Campos de saída
         prov = with_concat.dataProvider()
-        with_concat.startEditing()
-        for nm in ("g_in_exist", "g_ou_exist", "g_int_ns", "g_ou_ns"):
+        if not with_concat.isEditable():
+            with_concat.startEditing()
+        for nm in ("g_in_exist", "g_ou_exist", "g_int_ns", "g_ou_ns", "comp_line", "comp_max_setor"):
             if with_concat.fields().indexOf(nm) < 0:
                 prov.addAttributes([QgsField(nm, QVariant.Double)])
         with_concat.updateFields()
 
-        gi_idx  = with_concat.fields().indexOf("g_in_exist")
-        go_idx  = with_concat.fields().indexOf("g_ou_exist")
-        gin_idx = with_concat.fields().indexOf("g_int_ns")
-        gon_idx = with_concat.fields().indexOf("g_ou_ns")
+        gi_idx   = with_concat.fields().indexOf("g_in_exist")
+        go_idx   = with_concat.fields().indexOf("g_ou_exist")
+        gin_idx  = with_concat.fields().indexOf("g_int_ns")
+        gon_idx  = with_concat.fields().indexOf("g_ou_ns")
+        cli_idx  = with_concat.fields().indexOf("comp_line")
+        cmax_idx = with_concat.fields().indexOf("comp_max_setor")
         lsid_idx = with_concat.fields().indexOf("line_sector_id")
 
-        # Preenche linhas
+        # Atualiza cada segmento
         total_updates = 0
         feat_count = with_concat.featureCount()
         log_every = 1 if feat_count <= 200 else 100
-
-        if not with_concat.isEditable():
-            with_concat.startEditing()
 
         for i, f in enumerate(with_concat.getFeatures(), start=1):
             sid_key = "" if f[setor_idx] is None else str(f[setor_idx]).strip()
@@ -299,29 +297,35 @@ class Chasm:
             total_len = sector_len_sum.get(sid_key, 0.0)
             frac = (l / total_len) if total_len > 0 else 0.0
 
-            gi_total, go_total = group_totals.get(sid_key, (None, None))
+            gi_total, go_total = group_totals.get(sid_key, (0.0, 0.0))
+            qg_total = gi_total + go_total  # QG_j — total de domicílios no setor j
 
-            # EXISTENTE: proporcional ao total do setor (se faltar, grava 0.0)
-            gi_val = (gi_total * frac) if (gi_total is not None) else 0.0
-            go_val = (go_total * frac) if (go_total is not None) else 0.0
+            # Situação EXISTENTE
+            gi_val = (gi_total * frac) if gi_total > 0 else 0.0
+            go_val = (go_total * frac) if go_total > 0 else 0.0
 
-            # NÃO SEGREGADO: sempre grava, usando proporção global
-            gi_ns_val = (total_global * frac * p_in) if total_global > 0 else 0.0
-            go_ns_val = (total_global * frac * p_out) if total_global > 0 else 0.0
+            # Cenário NÃO-SEGREGADO (usa QG_j * proporção global)
+            gi_ns_val = (qg_total * frac * p_in)  if qg_total > 0 else 0.0
+            go_ns_val = (qg_total * frac * p_out) if qg_total > 0 else 0.0
 
-            with_concat.changeAttributeValue(f.id(), gi_idx, gi_val)
-            with_concat.changeAttributeValue(f.id(), go_idx, go_val)
-            with_concat.changeAttributeValue(f.id(), gin_idx, gi_ns_val)
-            with_concat.changeAttributeValue(f.id(), gon_idx, go_ns_val)
+            max_len_sector = sector_len_max.get(sid_key, 0.0)
+
+            with_concat.changeAttributeValue(f.id(), gi_idx,   gi_val)
+            with_concat.changeAttributeValue(f.id(), go_idx,   go_val)
+            with_concat.changeAttributeValue(f.id(), gin_idx,  gi_ns_val)
+            with_concat.changeAttributeValue(f.id(), gon_idx,  go_ns_val)
+            with_concat.changeAttributeValue(f.id(), cli_idx,  l)               # comp_line
+            with_concat.changeAttributeValue(f.id(), cmax_idx, max_len_sector)  # comp_max_setor
             total_updates += 1
 
             if (i % log_every) == 0 or log_every == 1:
                 lsid = f[lsid_idx] if lsid_idx >= 0 else ""
                 QgsMessageLog.logMessage(
                     (f"[Chasm] seg_id={f.id()} line_sector_id='{lsid}' setor='{sid_key}' "
-                    f"len={l:.3f} sum_len={total_len:.3f} frac={frac:.6f} "
+                    f"len={l:.3f} max_setor={max_len_sector:.3f} sum_len={total_len:.3f} frac={frac:.6f} "
                     f"GI_total={gi_total} GO_total={go_total} -> "
-                    f"g_in_exist={gi_val} g_ou_exist={go_val} g_int_ns={gi_ns_val} g_ou_ns={go_ns_val}"),
+                    f"g_in_exist={gi_val} g_ou_exist={go_val} "
+                    f"g_int_ns={gi_ns_val} g_ou_ns={go_ns_val}"),
                     "chasm_calculator", Qgis.Info
                 )
 
@@ -331,46 +335,39 @@ class Chasm:
             "chasm_calculator", Qgis.Success
         )
 
-        # (1d) Soma por setor nos polígonos (a partir de g_in_exist/g_ou_exist das linhas)
+        # Soma por setor nos polígonos (a partir de g_in_exist/g_ou_exist)
         sums_by_sector = {}
         for f in with_concat.getFeatures():
             sid_key = "" if f[setor_idx] is None else str(f[setor_idx]).strip()
-            try: gi_f = float(f[gi_idx] or 0.0)
-            except Exception: gi_f = 0.0
-            try: go_f = float(f[go_idx] or 0.0)
-            except Exception: go_f = 0.0
+            gi_f = float(f[gi_idx] or 0.0)
+            go_f = float(f[go_idx] or 0.0)
             cur = sums_by_sector.get(sid_key, (0.0, 0.0))
             sums_by_sector[sid_key] = (cur[0] + gi_f, cur[1] + go_f)
 
         poly_prov = fixed_polys.dataProvider()
-        fixed_polys.startEditing()
-        if fixed_polys.fields().indexOf("g_in_sum") < 0:
-            poly_prov.addAttributes([QgsField("g_in_sum", QVariant.Double)])
-        if fixed_polys.fields().indexOf("g_ou_sum") < 0:
-            poly_prov.addAttributes([QgsField("g_ou_sum", QVariant.Double)])
+        if not fixed_polys.isEditable():
+            fixed_polys.startEditing()
+        for nm in ("g_in_sum", "g_ou_sum"):
+            if fixed_polys.fields().indexOf(nm) < 0:
+                poly_prov.addAttributes([QgsField(nm, QVariant.Double)])
         fixed_polys.updateFields()
         gi_s_idx = fixed_polys.fields().indexOf("g_in_sum")
         go_s_idx = fixed_polys.fields().indexOf("g_ou_sum")
 
-        wrote_polys = 0
         for pf in fixed_polys.getFeatures():
             sid_key = "" if pf[poly_id_field] is None else str(pf[poly_id_field]).strip()
             gi_s, go_s = sums_by_sector.get(sid_key, (0.0, 0.0))
             fixed_polys.changeAttributeValue(pf.id(), gi_s_idx, gi_s)
             fixed_polys.changeAttributeValue(pf.id(), go_s_idx, go_s)
-            wrote_polys += 2
         fixed_polys.commitChanges()
-        QgsMessageLog.logMessage(
-            f"[Chasm] Polígonos atualizados com somas (g_in_sum/g_ou_sum): {wrote_polys} alterações.",
-            "chasm_calculator", Qgis.Info
-        )
+        QgsMessageLog.logMessage("[Chasm] Polígonos atualizados com somas.", "chasm_calculator", Qgis.Info)
 
-        # 9) Adiciona camada resultante
+        # Adiciona camadas ao projeto
         with_concat.setCrs(fixed_lines.crs())
         with_concat.setName(f"{line_layer.name()}_fragmented_by_{poly_layer.name()}")
         QgsProject.instance().addMapLayer(with_concat)
 
-        # Opcional: refletir os polígonos atualizados
+        # Reflete polígonos corrigidos (opcional)
         try:
             poly_name = poly_layer.name()
             QgsProject.instance().removeMapLayer(poly_layer.id())
@@ -381,9 +378,132 @@ class Chasm:
 
         return with_concat
 
-    # ------------------------------ RUN (fluxo original + sDNA) ------------------------------
+    # ------------------------------ (NOVO) Runner sDNA + JOIN MAD (passo 2a + 2b) ------------------------------
+    def _sdna_integral_and_join_mad(self, base_line_layer):
+        """
+        Executa sDNA Integral 4x (DW = g_in_exist, g_ou_exist, g_int_ns, g_ou_ns) sobre 'base_line_layer'
+        e (2b) junta no 'base_line_layer' o campo MAD* de cada saída, renomeando para:
+          g_in_exist  -> mad_int_exist
+          g_ou_exist  -> mad_out_exist
+          g_int_ns    -> mad_int_ns
+          g_ou_ns     -> mad_out_ns
+        União espacial por 'equals'. Se falhar, tenta 'intersects' como fallback.
+        Retorna a camada final enriquecida.
+        """
+        import processing
+
+        alg_id = self._sdna_integral_alg_id or self._find_sdna_integral_alg()
+        if not alg_id:
+            raise RuntimeError("Algoritmo sDNA Integral não encontrado no Processing.")
+
+        # 2a — parâmetros padrão coerentes com seu fluxo
+        par_base = {
+            'input_polyline_features': base_line_layer,
+            'compute_betweenness': False,
+            'compute_betweenness_bidirectional': False,
+            'analysis_metric': 'ANGULAR',
+            'radius': 1600,
+            'radius_mode': 0,      # band
+            'weighting': 'Link',
+            'origin_weight': '',
+            'output_features': 'TEMPORARY_OUTPUT'
+        }
+
+        dst_map = {
+            'g_in_exist': 'mad_int_exist',
+            'g_ou_exist': 'mad_out_exist',
+            'g_int_ns' : 'mad_int_ns',
+            'g_ou_ns'  : 'mad_out_ns'
+        }
+        dest_weights = list(dst_map.keys())
+
+        # rodamos 2a + 2b iterativamente acumulando no 'current'
+        current = base_line_layer
+        results_info = []
+
+        for dw in dest_weights:
+            # 2a — sDNA
+            par = dict(par_base)
+            par['destination_weight'] = dw
+            res = processing.run(alg_id, par)
+            lyr_out = res.get('output_features')
+            if not lyr_out:
+                raise RuntimeError(f"sDNA Integral não retornou saída para DW '{dw}'.")
+            lyr_out.setName(f"{base_line_layer.name()}_sDNA_{dw}")
+            QgsProject.instance().addMapLayer(lyr_out)
+
+            # achar primeiro campo que começa com "MAD"
+            mad_field = None
+            for f in lyr_out.fields():
+                if f.name().upper().startswith('MAD'):
+                    mad_field = f.name()
+                    break
+            if not mad_field:
+                raise RuntimeError(f"Campo MAD* não encontrado na saída do sDNA para DW '{dw}'.")
+
+            # 2b — Join por localização (equals). Fallback para intersects se der exceção.
+            target_name = dst_map[dw]
+            try:
+                joined = processing.run("native:joinattributesbylocation", {
+                    "INPUT": current,
+                    "JOIN": lyr_out,
+                    "PREDICATE": [5],  # 5 ~ equals (em muitas builds). Se não suportar, cai no except.
+                    "JOIN_FIELDS": [mad_field],
+                    "METHOD": 0,       # Take attributes of first matching feature only
+                    "DISCARD_NONMATCHING": False,
+                    "PREFIX": "",
+                    "OUTPUT": "TEMPORARY_OUTPUT"
+                })["OUTPUT"]
+            except Exception:
+                # fallback com 'intersects' (0)
+                joined = processing.run("native:joinattributesbylocation", {
+                    "INPUT": current,
+                    "JOIN": lyr_out,
+                    "PREDICATE": [0],  # intersects
+                    "JOIN_FIELDS": [mad_field],
+                    "METHOD": 0,
+                    "DISCARD_NONMATCHING": False,
+                    "PREFIX": "",
+                    "OUTPUT": "TEMPORARY_OUTPUT"
+                })["OUTPUT"]
+
+            # renomear campo MAD* -> target_name
+            # cria novo campo com o valor de MAD*, depois remove o MAD original
+            with_new = processing.run("native:fieldcalculator", {
+                "INPUT": joined,
+                "FIELD_NAME": target_name,
+                "FIELD_TYPE": 0,  # Decimal
+                "FIELD_LENGTH": 20,
+                "FIELD_PRECISION": 6,
+                "FORMULA": f"\"{mad_field}\"",
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
+
+            cleaned = processing.run("native:deletecolumn", {
+                "INPUT": with_new,
+                "COLUMN": [mad_field],
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
+
+            current = cleaned
+            results_info.append((dw, lyr_out.name(), mad_field, target_name))
+
+        # adiciona camada final enriquecida
+        current.setName(f"{base_line_layer.name()}_with_MAD")
+        QgsProject.instance().addMapLayer(current)
+
+        # log resumo
+        for dw, out_name, mad_src, mad_dst in results_info:
+            QgsMessageLog.logMessage(
+                f"[Chasm] JOIN MAD: DW={dw} saída='{out_name}' campo_src='{mad_src}' -> campo_dst='{mad_dst}'",
+                "chasm_calculator", Qgis.Success
+            )
+
+        return current
+
+    # ------------------------------ RUN (fluxo original + sDNA opcional do DIÁLOGO) ------------------------------
     def run(self):
-        """Adia o import do diálogo para evitar falhar na importação do módulo."""
+        """Abre o diálogo e (opcionalmente) executa sDNA Integral sem depender da tabela/linhas."""
         if self.dlg is None:
             try:
                 from .chasm_calculator_dialog import ChasmDialog  # <-- import adiado
@@ -395,7 +515,7 @@ class Chasm:
             try:
                 self.dlg = ChasmDialog(self.iface.mainWindow())
 
-                # conecta o botão do diálogo para fragmentar
+                # conecta o botão do diálogo para fragmentar (se existir no UI)
                 btn = getattr(self.dlg, "btnFragmentLines", None)
                 if btn is not None:
                     btn.clicked.connect(self.do_fragmentation_from_dialog)
@@ -410,58 +530,46 @@ class Chasm:
         if not self.dlg.exec_():
             return
 
-        # ===== A partir daqui é o fluxo normal =====
+        # ===== NADA DE TABELA/“LINHAS” AQUI (fluxo do diálogo permanece opcional) =====
+
+        # 1) Camada de rede (preferir combo do UI; senão autodetectar 1ª camada de linhas do projeto)
+        net_layer = None
         try:
-            inputs = self.dlg.selected_inputs()  # [{'layer1_id':..., 'gi1':..., ...}, ...]
-        except Exception as e:
-            QMessageBox.critical(self.iface.mainWindow(), "Chasm", f"Erro lendo entradas:\n{e}")
-            return
+            if hasattr(self.dlg, "selected_network_layer"):
+                net_layer = self.dlg.selected_network_layer()
+        except Exception:
+            net_layer = None
 
-        if not inputs:
-            QMessageBox.warning(self.iface.mainWindow(), "Chasm",
-                                "Adicione ao menos uma linha (camadas do projeto).")
-            return
-
-        loaded_layers = []
-        for ent in inputs:
-            for key in ('layer1_id', 'layer2_id'):
-                lyr_id = ent.get(key)
-                if not lyr_id:
-                    continue
-                lyr = QgsProject.instance().mapLayer(lyr_id)
-                if lyr and lyr not in loaded_layers:
-                    loaded_layers.append(lyr)
-
-        if not loaded_layers:
-            QMessageBox.critical(self.iface.mainWindow(), "Chasm",
-                                 "Não foi possível referenciar camadas válidas do projeto.")
-            return
-
-        # Camada de rede (da aba sDNA ou autodetecta LINHAS)
-        net_layer = self.dlg.selected_network_layer()
         if net_layer is None:
-            for lyr in loaded_layers:
+            for lyr in QgsProject.instance().mapLayers().values():
                 try:
                     if QgsWkbTypes.geometryType(lyr.wkbType()) == QgsWkbTypes.LineGeometry:
                         net_layer = lyr
                         break
                 except Exception:
-                    pass
+                    continue
+
         if net_layer is None:
             QMessageBox.warning(self.iface.mainWindow(), "Chasm",
-                                "Selecione a camada de sistema viário (linhas) na aba sDNA.")
+                                "Selecione a camada de sistema viário (linhas) na aba sDNA ou mantenha ao menos uma camada de LINHAS no projeto.")
             return
 
-        # Parâmetros sDNA
-        params = self.dlg.sdna_params()
-        dest_weights = [w for w in params.get("dest_weights", []) if w]
-        if len(dest_weights) != 4:
-            QMessageBox.warning(self.iface.mainWindow(), "Chasm",
-                                "Preencha os quatro 'Destination weight'.")
-            return
-
-        # (Opcional) Execução sDNA
+        # 2) Parâmetros sDNA (sem obrigar os 4 DW)
+        params = {}
         try:
+            if hasattr(self.dlg, "sdna_params"):
+                params = self.dlg.sdna_params() or {}
+        except Exception:
+            params = {}
+
+        dest_weights = [w for w in (params.get("dest_weights") or []) if w]
+
+        # 3) (Opcional) Execução sDNA: só roda se houver ao menos 1 DW
+        try:
+            if not dest_weights:
+                self._msg("sDNA: nenhum Destination weight informado; pulando execução do sDNA.", Qgis.Info, 6)
+                return
+
             import processing
 
             def _find_sdna_integral_alg():
@@ -482,13 +590,13 @@ class Chasm:
 
             par_base = {
                 'input_polyline_features': net_layer,
-                'compute_betweenness': params["betweenness"],
-                'compute_betweenness_bidirectional': params["betw_bidirectional"],
-                'analysis_metric': params["metric"],
-                'radius': params["radius"],
-                'radius_mode': 0 if params["radius_mode"] == 'band' else 1,
-                'weighting': params["weighting"],
-                'origin_weight': params["origin_weight"] or '',
+                'compute_betweenness': params.get("betweenness", False),
+                'compute_betweenness_bidirectional': params.get("betw_bidirectional", False),
+                'analysis_metric': params.get("metric", "ANGULAR"),
+                'radius': params.get("radius", 1000),
+                'radius_mode': 0 if params.get("radius_mode", "band") == 'band' else 1,
+                'weighting': params.get("weighting", ""),
+                'origin_weight': params.get("origin_weight", "") or '',
                 'output_features': 'TEMPORARY_OUTPUT'
             }
 
@@ -505,6 +613,7 @@ class Chasm:
 
             QMessageBox.information(self.iface.mainWindow(), "Chasm",
                                     f"sDNA Integral executado ({results_added} saídas).")
+
         except Exception as e:
             QgsMessageLog.logMessage(f"sDNA erro: {e}", "chasm_calculator", Qgis.Critical)
             QMessageBox.critical(self.iface.mainWindow(), "Chasm", f"Falha ao executar sDNA:\n{e}")
@@ -517,6 +626,7 @@ class Chasm:
         - Campo do polígono autodetectado (prioriza 'cod_setor')
         - Campos de grupos autodetectados (prioriza 'grupo_interesse' / 'grupo_outros')
         - Executa: fragmentar -> distribuir GI/GO proporcionalmente -> somar por setor.
+        - Em seguida executa o sDNA Integral (2a) e faz o JOIN do campo MAD* (2b) na camada resultante.
         """
         line_layer, poly_layer = self._pick_selected_layers_by_geom()
         if not line_layer or not poly_layer:
@@ -556,6 +666,9 @@ class Chasm:
             )
 
         try:
+            # ===========================
+            # ETAPA 1 - FRAGMENTAÇÃO
+            # ===========================
             out = self.fragment_lines_by_polygons(
                 line_layer=line_layer,
                 poly_layer=poly_layer,
@@ -565,14 +678,24 @@ class Chasm:
                 poly_group_others_field=go_field
             )
             self._msg(
-                "Concluído (teste):\n"
+                "Concluído (Etapa 1):\n"
                 "• Linhas: g_in_exist, g_ou_exist (proporcional ao comprimento) + g_int_ns, g_ou_ns.\n"
-                "• Polígonos: g_in_sum, g_ou_sum (somados por setor).\n"
-                f"Saída de linhas: {out.name()}",
+                "• Polígonos: g_in_sum, g_ou_sum (somados por setor).",
+                Qgis.Success, 8
+            )
+
+            # ===========================
+            # ETAPA 2a + 2b - sDNA + JOIN MAD
+            # ===========================
+            enriched = self._sdna_integral_and_join_mad(out)
+            self._msg(
+                f"Concluído (Etapa 2): sDNA Integral e JOIN MAD adicionados na camada '{enriched.name()}'.\n"
+                "Campos criados: mad_int_exist, mad_out_exist, mad_int_ns, mad_out_ns.",
                 Qgis.Success, 10
             )
+
         except Exception as e:
-            self._msg(f"Erro (fragmentar+distribuir+somar): {e}", Qgis.Critical, 10)
+            self._msg(f"Erro durante o processo completo: {e}", Qgis.Critical, 10)
 
     # ------------------------------ Botão do DIÁLOGO ------------------------------
     def do_fragmentation_from_dialog(self):

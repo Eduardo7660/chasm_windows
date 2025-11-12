@@ -463,7 +463,8 @@ class Chasm:
         analmet_key, analmet_options,
         radii_key, bandedradii_key, cont_key,
         weighting_key, weighting_options,
-        origweight_key, custommetric_key
+        origweight_key, custommetric_key,
+        zonefiles_key, odfile_key, disable_key, oneway_key, intermediates_key, advanced_key
         """
         from qgis.core import QgsApplication
         alg = QgsApplication.processingRegistry().algorithmById(alg_id)
@@ -480,32 +481,35 @@ class Chasm:
         weighting_key = None
         weighting_options = []
         origweight_key = custommetric_key = None
+        zonefiles_key = odfile_key = None
+        disable_key = oneway_key = intermediates_key = advanced_key = None
 
-        # helpers
-        def lower(s): 
-            try: return (s or "").lower()
-            except Exception: return ""
+        def lower(s):
+            try:
+                return (s or "").lower()
+            except Exception:
+                return ""
 
         # varre parâmetros
         for p in alg.parameterDefinitions():
             n = p.name()
             ln = lower(n)
-            ld = lower(getattr(p, "description", lambda: "")())
+            try:
+                ld = lower(p.description())
+            except Exception:
+                ld = ""
 
-            # INPUT (linhas)
+            # INPUT / OUTPUT
             if input_key is None and (ln == "input" or "input" in ln or "polyline" in ld or "network" in ld):
                 input_key = n
 
             # DESTINATION WEIGHT
-            if destw_key is None:
-                if ln == "destweight" or ("dest" in ln and "weight" in ln) or ("destination" in ld and "weight" in ld):
-                    destw_key = n
+            if destw_key is None and (ln == "destweight" or ("dest" in ln and "weight" in ln) or ("destination" in ld and "weight" in ld)):
+                destw_key = n
 
-            # Betweenness
+            # Betweenness / Bidirectional
             if bet_key is None and ("betweenness" in ln):
                 bet_key = n
-
-            # Bidirectional
             if bet_bi_key is None and (ln in ("bidir", "bidirectional", "bidirection", "bi") or "bidirectional" in ld):
                 bet_bi_key = n
 
@@ -521,7 +525,7 @@ class Chasm:
             if end_gs_key is None and ("end_gs" in ln or "end grade" in ld):
                 end_gs_key = n
 
-            # Métrica de análise (enum)
+            # Métrica (enum)
             if analmet_key is None and ("analmet" in ln or ("metric" in ld and "analysis" in ld)):
                 analmet_key = n
                 try:
@@ -547,11 +551,25 @@ class Chasm:
                 except Exception:
                     pass
 
-            # Origin weight & custom metric field
+            # Origin/custom weights
             if origweight_key is None and ("origweight" in ln or ("origin" in ld and "weight" in ld)):
                 origweight_key = n
             if custommetric_key is None and ("custommetric" in ln or ("custom metric" in ld)):
                 custommetric_key = n
+
+            # Arquivos/flags adicionais
+            if zonefiles_key is None and (ln == "zonefiles" or ("zone" in ld and "csv" in ld)):
+                zonefiles_key = n
+            if odfile_key is None and (ln == "odfile" or ("origin" in ld and "destination" in ld)):
+                odfile_key = n
+            if disable_key is None and (ln == "disable" or "disable" in ld):
+                disable_key = n
+            if oneway_key is None and (ln == "oneway" or "one way" in ld):
+                oneway_key = n
+            if intermediates_key is None and (ln == "intermediates" or "intermediate" in ld):
+                intermediates_key = n
+            if advanced_key is None and (ln == "advanced" or "advanced config" in ld):
+                advanced_key = n
 
         # OUTPUT
         for o in alg.outputDefinitions():
@@ -578,8 +596,13 @@ class Chasm:
             "weighting_options": weighting_options,
             "origweight_key": origweight_key,
             "custommetric_key": custommetric_key,
+            "zonefiles_key": zonefiles_key,
+            "odfile_key": odfile_key,
+            "disable_key": disable_key,
+            "oneway_key": oneway_key,
+            "intermediates_key": intermediates_key,
+            "advanced_key": advanced_key,
         }
-
 
     def _introspect_sdna_params(self, alg_id):
         """
@@ -626,14 +649,7 @@ class Chasm:
     def _sdna_integral_and_join_mad(self, base_line_layer, sdna_ui_params=None):
         """
         Executa sDNA Integral + JOIN do campo MAD resultante de cada DW.
-        Compatível com a assinatura introspectada:
-        input, output, betweenness, bidir, junctions, hull,
-        start_gs, end_gs,
-        analmet (enum: ['EUCLIDEAN','ANGULAR','CUSTOM','CYCLE','CYCLE_ROUNDTRIP','EUCLIDEAN_ANGULAR']),
-        radii (str), bandedradii (bool), cont (bool),
-        weighting (enum: ['Link','Length','Polyline']),
-        origweight (field), destweight (field),
-        custommetric (field) (usado só quando analmet=CUSTOM).
+        Compatível com builds que exigem presença de todos os parâmetros.
         """
         import processing as pr
         from qgis.core import Qgis, QgsProject, QgsApplication
@@ -644,50 +660,34 @@ class Chasm:
         if not alg_id:
             raise RuntimeError("Algoritmo sDNA Integral não encontrado no Processing.")
 
+        # === Descobre chaves do algoritmo (dinâmico) ===
         keys = self._resolve_sdna_param_keys(alg_id)
 
-        # --- Fallbacks duros por nome exato, usando a lista real de parâmetros ---
-        alg = QgsApplication.processingRegistry().algorithmById(alg_id)
-        names_l = set()
-        try:
-            names_l = {p.name() for p in alg.parameterDefinitions()}
-        except Exception:
-            pass
-
-        if not keys.get("radii_key") and "radii" in names_l:
-            radii_key = "radii"
-        if not keys.get("bandedradii_key") and "bandedradii" in names_l:
-            bandedradii_key = "bandedradii"
-        if not keys.get("cont_key") and "cont" in names_l:
-            cont_key = "cont"
-        if not keys.get("analmet_key") and "analmet" in names_l:
-            analmet_key = "analmet"
-        if not keys.get("origweight_key") and "origweight" in names_l:
-            origweight_key = "origweight"
-        if not keys.get("custommetric_key") and "custommetric" in names_l:
-            custommetric_key = "custommetric"
-        if not keys.get("start_gs_key") and "start_gs" in names_l:
-            start_gs_key = "start_gs"
-        if not keys.get("end_gs_key") and "end_gs" in names_l:
-            end_gs_key = "end_gs"
-
-        # agora seguem as extrações das chaves...
-        input_key         = keys.get("input_key")
-        output_key        = keys.get("output_key")
-        destw_key         = keys.get("destw_key")
-        bet_key           = keys.get("bet_key")
-        bet_bi_key        = keys.get("bet_bi_key")
-        junctions_key     = keys.get("junctions_key")
-        hull_key          = keys.get("hull_key")
-        start_gs_key      = keys.get("start_gs_key") or start_gs_key
-        end_gs_key        = keys.get("end_gs_key") or end_gs_key
-        analmet_key       = keys.get("analmet_key") or analmet_key
-        radii_key         = keys.get("radii_key") or radii_key
-        bandedradii_key   = keys.get("bandedradii_key") or bandedradii_key
-        cont_key          = keys.get("cont_key") or cont_key
-        weighting_key     = keys.get("weighting_key")
-        origweight_key    = keys.get("origweight_key") or origweight_key
-        custommetric_key  = keys.get("custommetric_key") or custommetric_key
+        # Extrai mapeamentos
+        input_key        = keys.get("input_key")
+        output_key       = keys.get("output_key")
+        destw_key        = keys.get("destw_key")
+        bet_key          = keys.get("bet_key")
+        bet_bi_key       = keys.get("bet_bi_key")
+        junctions_key    = keys.get("junctions_key")
+        hull_key         = keys.get("hull_key")
+        start_gs_key     = keys.get("start_gs_key")
+        end_gs_key       = keys.get("end_gs_key")
+        analmet_key      = keys.get("analmet_key")
+        analmet_options  = keys.get("analmet_options")
+        radii_key        = keys.get("radii_key")
+        bandedradii_key  = keys.get("bandedradii_key")
+        cont_key         = keys.get("cont_key")
+        weighting_key    = keys.get("weighting_key")
+        weighting_options= keys.get("weighting_options")
+        origweight_key   = keys.get("origweight_key")
+        custommetric_key = keys.get("custommetric_key")
+        zonefiles_key    = keys.get("zonefiles_key")
+        odfile_key       = keys.get("odfile_key")
+        disable_key      = keys.get("disable_key")
+        oneway_key       = keys.get("oneway_key")
+        intermediates_key= keys.get("intermediates_key")
+        advanced_key     = keys.get("advanced_key")
 
         # Sanidade mínima
         if not input_key or not destw_key or not output_key:
@@ -699,10 +699,6 @@ class Chasm:
             raise RuntimeError("Parâmetro de métrica 'analmet' não encontrado nesta build do sDNA.")
 
         # ---- parâmetros vindos da UI (com defaults) ----
-        # Observação: a tua UI atual já passa 'metric' (string), 'radius' (int),
-        # 'radius_mode' ('band'|'continuous'), 'betweenness', 'betw_bidirectional',
-        # 'weighting' (string), 'origin_weight' (field), 'dest_weights' (lista),
-        # e opcionalmente 'custom_metric_field' (nome do campo).
         metric_val_str     = "ANGULAR"
         radius_val         = 1600
         radius_mode_str    = "band"     # 'band' ou 'continuous'
@@ -736,29 +732,25 @@ class Chasm:
 
         # Helpers de enum → índice
         def enum_index(value_str, options, default_idx=None):
-            """Converte string para índice (case-insensitive) nas options do enum do QGIS."""
             if options is None or len(options) == 0:
                 return default_idx
             v = (value_str or "").strip().upper()
-            # match exato
             for i, opt in enumerate(options):
                 if str(opt).strip().upper() == v:
                     return i
-            # prefix match
             for i, opt in enumerate(options):
-                if str(opt).strip().upper().startswith(v) or v.startswith(str(opt).strip().upper()):
+                s = str(opt).strip().upper()
+                if s.startswith(v) or v.startswith(s):
                     return i
             return default_idx
 
-        # analmet: converter 'ANGULAR' etc. em índice
-        analmet_idx = enum_index(metric_val_str, analmet_options, default_idx=0)  # default EUCLIDEAN se não achar
-        # Regra: se usuário pediu CUSTOM e não apontou campo, faz fallback para ANGULAR
-        if analmet_options and metric_val_str == "CUSTOM":
-            if not custom_metric_field:
-                self._log("sDNA: 'CUSTOM' sem campo custommetric — fallback para 'ANGULAR'.", Qgis.Warning, True)
-                analmet_idx = enum_index("ANGULAR", analmet_options, default_idx=0)
+        # analmet -> índice
+        analmet_idx = enum_index(metric_val_str, analmet_options, default_idx=0)
+        if analmet_options and metric_val_str == "CUSTOM" and not custom_metric_field:
+            self._log("sDNA: 'CUSTOM' sem campo custommetric — fallback para 'ANGULAR'.", Qgis.Warning, True)
+            analmet_idx = enum_index("ANGULAR", analmet_options, default_idx=0)
 
-        # weighting: índice se enum
+        # weighting -> índice (se enum)
         def normalize_weighting(val_raw, options):
             if not val_raw:
                 return None
@@ -767,9 +759,8 @@ class Chasm:
             return val_raw
         weighting_val = normalize_weighting(weighting_val_raw, weighting_options)
 
-        # radii precisa ser **string**. A tua UI dá um único raio (ex.: 1600)
+        # radii precisa ser string
         radii_str = str(radius_val)
-        # modos
         banded_val = (radius_mode_str == "band")
         cont_val   = (radius_mode_str == "continuous")
 
@@ -790,7 +781,9 @@ class Chasm:
             f"ANALMET='{analmet_key}' opts={analmet_options} -> idx={analmet_idx}, "
             f"RADII='{radii_key}', BANDED='{bandedradii_key}', CONT='{cont_key}', "
             f"WEIGHTING='{weighting_key}' opts={weighting_options} -> {weighting_val}, "
-            f"ORIGW='{origweight_key}', CUSTOMMET='{custommetric_key}'",
+            f"ORIGW='{origweight_key}', CUSTOMMET='{custommetric_key}', "
+            f"ZONEFILES='{zonefiles_key}', ODFILE='{odfile_key}', DISABLE='{disable_key}', "
+            f"ONEWAY='{oneway_key}', INTERMEDIATES='{intermediates_key}', ADVANCED='{advanced_key}'",
             Qgis.Info, True
         )
 
@@ -801,7 +794,6 @@ class Chasm:
             # Sanity
             if current is None or not hasattr(current, "isValid") or not current.isValid():
                 raise RuntimeError("Camada de entrada para sDNA está inválida ou None.")
-            # checa se DW existe
             field_names = [f.name() for f in current.fields()]
             if dw_field not in field_names:
                 preview = ", ".join(field_names[:10]) + ("…" if len(field_names) > 10 else "")
@@ -810,48 +802,61 @@ class Chasm:
                     f"Campos disponíveis: {preview}"
                 )
 
+            from qgis.core import QgsVectorFileWriter, QgsProcessingFeedback
+            import tempfile, os
+
+            # salva a camada em arquivo temporário
+            tmp_dir = tempfile.mkdtemp(prefix="chasm_sdna_")
+            tmp_path = os.path.join(tmp_dir, f"{current.name()}_input.shp")
+
+            save_opts = QgsVectorFileWriter.SaveVectorOptions()
+            save_opts.driverName = "ESRI Shapefile"
+            save_opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
+            _writer, err = QgsVectorFileWriter.writeAsVectorFormatV3(
+                current,
+                tmp_path,
+                current.crs().authid(),  # retorna string tipo "EPSG:4326"
+                save_opts
+            )
+            if err != QgsVectorFileWriter.NoError:
+                raise RuntimeError(f"Falha ao salvar camada temporária para sDNA: código {err}")
+
             params = {
-                input_key:  current,
-                destw_key:  dw_field,
-                output_key: 'TEMPORARY_OUTPUT',
-                analmet_key: analmet_idx,        # **índice**, não string
+                input_key:   tmp_path,  # agora é um caminho, não a layer
+                destw_key:   dw_field,
+                output_key:  'TEMPORARY_OUTPUT',
+                analmet_key: analmet_idx,
             }
 
             # raios e modos
-            if radii_key:
-                params[radii_key] = radii_str
-            if bandedradii_key is not None:
-                params[bandedradii_key] = bool(banded_val)
-            if cont_key is not None:
-                params[cont_key] = bool(cont_val)
+            if radii_key:         params[radii_key] = radii_str
+            if bandedradii_key is not None: params[bandedradii_key] = bool(banded_val)
+            if cont_key is not None:        params[cont_key] = bool(cont_val)
 
             # betweenness
-            if bet_key is not None:
-                params[bet_key] = bool(bet_val)
-            if bet_bi_key is not None:
-                params[bet_bi_key] = bool(bet_bi_val) if bet_val else False
+            if bet_key is not None:     params[bet_key] = bool(bet_val)
+            if bet_bi_key is not None:  params[bet_bi_key] = bool(bet_bi_val) if bet_val else False
 
             # weighting
             if weighting_key and (weighting_val is not None):
                 params[weighting_key] = weighting_val
 
-            # pesos/flags opcionais (enviar vazio/False por padrão evita KeyError de certas builds)
-            if origweight_key:
-                params[origweight_key] = origin_weight_val or ""
-            if custommetric_key:
-                # só manda se analmet CUSTOM; caso contrário, envia vazio
-                params[custommetric_key] = custom_metric_field if (metric_val_str == "CUSTOM" and custom_metric_field) else ""
+            # campos opcionais (enviar vazios/False para não dar KeyError)
+            if origweight_key:     params[origweight_key] = origin_weight_val or ""
+            if custommetric_key:   params[custommetric_key] = (custom_metric_field if (metric_val_str == "CUSTOM" and custom_metric_field) else "")
 
-            if junctions_key:
-                params[junctions_key] = False
-            if hull_key:
-                params[hull_key] = False
-            if start_gs_key:
-                params[start_gs_key] = ""   # sem campo
-            if end_gs_key:
-                params[end_gs_key] = ""     # sem campo
+            if junctions_key:      params[junctions_key] = False
+            if hull_key:           params[hull_key] = False
+            if start_gs_key:       params[start_gs_key] = ""   # sem campo
+            if end_gs_key:         params[end_gs_key] = ""     # sem campo
+            if zonefiles_key:      params[zonefiles_key] = ""  # sem CSV
+            if odfile_key:         params[odfile_key] = ""     # sem OD matrix
+            if disable_key:        params[disable_key] = ""    # sem expressão
+            if oneway_key:         params[oneway_key] = ""     # sem campo
+            if intermediates_key:  params[intermediates_key] = ""  # sem filtro intermediário
+            if advanced_key:       params[advanced_key] = ""   # sem config avançada
 
-            # Log amigável (evita printar objetos grandes)
+            # Log amigável
             def _v(v):
                 try:
                     if hasattr(v, "name") and callable(getattr(v, "name", None)):
@@ -898,7 +903,7 @@ class Chasm:
             if not mad_field:
                 raise RuntimeError(f"Campo MAD* não encontrado na saída do sDNA para DW '{dw}'.")
 
-            # 2b — JOIN MAD (equals → intersects fallback)
+            # 2b — JOIN MAD
             try:
                 joined = pr.run("native:joinattributesbylocation", {
                     "INPUT": current, "JOIN": out_lyr,
@@ -916,7 +921,13 @@ class Chasm:
                     "PREFIX": "", "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
 
-            target_name = dst_map.get(dw, f"mad_{dw}".replace(" ", "_").lower()[:30])
+            target_name = {
+                (dest_weights[0] or 'g_in_exist'): 'mad_int_exist',
+                (dest_weights[1] or 'g_ou_exist'): 'mad_out_exist',
+                (dest_weights[2] or 'g_int_ns')  : 'mad_int_ns',
+                (dest_weights[3] or 'g_ou_ns')   : 'mad_out_ns'
+            }.get(dw, f"mad_{dw}".replace(" ", "_").lower()[:30])
+
             with_new = pr.run("native:fieldcalculator", {
                 "INPUT": joined, "FIELD_NAME": target_name,
                 "FIELD_TYPE": 0, "FIELD_LENGTH": 20, "FIELD_PRECISION": 6,

@@ -3,7 +3,7 @@
  <class>ChasmDialogBase</class>
  <widget class="QDialog" name="ChasmDialogBase">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>700</width><height>500</height></rect>
+   <rect><x>0</x><y>0</y><width>700</width><height>560</height></rect>
   </property>
   <property name="windowTitle">
    <string>Chasm Calculator</string>
@@ -17,62 +17,184 @@
       <layout class="QGridLayout" name="gridSdna">
 
        <!-- Polígonos -->
-       <item row="0" column="0"><widget class="QLabel"><property name="text"><string>Camada Setores (Polígonos)</string></property></widget></item>
-       <item row="0" column="1" colspan="2"><widget class="QComboBox" name="cbPoligonoLayer"/></item>
+       <item row="0" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Camada Setores (Polígonos)</string></property>
+        </widget>
+       </item>
+       <item row="0" column="1" colspan="2">
+        <widget class="QComboBox" name="cbPoligonoLayer"/>
+       </item>
 
-       <item row="1" column="0"><widget class="QLabel"><property name="text"><string>Coluna do grupo de interesse</string></property></widget></item>
-       <item row="1" column="1" colspan="2"><widget class="QComboBox" name="cbGrupoInteresseField"/></item>
+       <item row="1" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Coluna ID do polígono</string></property>
+        </widget>
+       </item>
+       <item row="1" column="1" colspan="2">
+        <widget class="QComboBox" name="cbPoligonoIdField"/>
+       </item>
 
-       <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Coluna do grupo outros</string></property></widget></item>
-       <item row="2" column="1" colspan="2"><widget class="QComboBox" name="cbGrupoOutriField"/></item>
+       <item row="2" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Coluna do grupo de interesse</string></property>
+        </widget>
+       </item>
+       <item row="2" column="1" colspan="2">
+        <widget class="QComboBox" name="cbGrupoInteresseField"/>
+       </item>
+
+       <item row="3" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Coluna do grupo outros</string></property>
+        </widget>
+       </item>
+       <item row="3" column="1" colspan="2">
+        <widget class="QComboBox" name="cbGrupoOutriField"/>
+       </item>
 
        <!-- Rede -->
-       <item row="3" column="0"><widget class="QLabel"><property name="text"><string>Camada de sistema viário (linhas)</string></property></widget></item>
-       <item row="3" column="1" colspan="2"><widget class="QComboBox" name="cbNetworkLayer"/></item>
+       <item row="4" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Camada de sistema viário (linhas)</string></property>
+        </widget>
+       </item>
+       <item row="4" column="1" colspan="2">
+        <widget class="QComboBox" name="cbNetworkLayer"/>
+       </item>
 
        <!-- Botão -->
-       <item row="4" column="0" colspan="3">
+       <item row="5" column="0" colspan="3">
         <widget class="QPushButton" name="btnFragmentLines">
          <property name="text"><string>Fragmentar linhas por polígonos</string></property>
          <property name="toolTip"><string>Corta a camada de linhas pelos polígonos e cria uma nova camada com o campo 'cod_setor'.</string></property>
         </widget>
        </item>
 
-       <!-- Parâmetros -->
-       <item row="5" column="0"><widget class="QCheckBox" name="chkBetweenness"><property name="text"><string>Compute betweenness (opcional)</string></property></widget></item>
-       <item row="5" column="1" colspan="2"><widget class="QCheckBox" name="chkBetweennessBidirectional"><property name="text"><string>Betweenness bidirecional</string></property><property name="enabled"><bool>false</bool></property></widget></item>
+       <!-- Destination Weights (4 campos) -->
+       <item row="6" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Destination weight 1</string></property>
+        </widget>
+       </item>
+       <item row="6" column="1" colspan="2">
+        <widget class="QComboBox" name="cbDW1">
+         <property name="editable"><bool>true</bool></property>
+        </widget>
+       </item>
 
-       <item row="6" column="0"><widget class="QLabel"><property name="text"><string>Métrica</string></property></widget></item>
-       <item row="6" column="1"><widget class="QComboBox" name="cbMetric">
+       <item row="7" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Destination weight 2</string></property>
+        </widget>
+       </item>
+       <item row="7" column="1" colspan="2">
+        <widget class="QComboBox" name="cbDW2">
+         <property name="editable"><bool>true</bool></property>
+        </widget>
+       </item>
+
+       <item row="8" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Destination weight 3</string></property>
+        </widget>
+       </item>
+       <item row="8" column="1" colspan="2">
+        <widget class="QComboBox" name="cbDW3">
+         <property name="editable"><bool>true</bool></property>
+        </widget>
+       </item>
+
+       <item row="9" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Destination weight 4</string></property>
+        </widget>
+       </item>
+       <item row="9" column="1" colspan="2">
+        <widget class="QComboBox" name="cbDW4">
+         <property name="editable"><bool>true</bool></property>
+        </widget>
+       </item>
+
+       <!-- Parâmetros -->
+       <item row="10" column="0">
+        <widget class="QCheckBox" name="chkBetweenness">
+         <property name="text"><string>Compute betweenness (opcional)</string></property>
+        </widget>
+       </item>
+       <item row="10" column="1" colspan="2">
+        <widget class="QCheckBox" name="chkBetweennessBidirectional">
+         <property name="text"><string>Betweenness bidirecional</string></property>
+         <property name="enabled"><bool>false</bool></property>
+        </widget>
+       </item>
+
+       <item row="11" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Métrica</string></property>
+        </widget>
+       </item>
+       <item row="11" column="1">
+        <widget class="QComboBox" name="cbMetric">
          <item><property name="text"><string>ANGULAR</string></property></item>
          <item><property name="text"><string>EUCLIDEAN</string></property></item>
          <item><property name="text"><string>NORMAL</string></property></item>
-       </widget></item>
+        </widget>
+       </item>
 
-       <item row="7" column="0"><widget class="QLabel"><property name="text"><string>Raio (m)</string></property></widget></item>
-       <item row="7" column="1"><widget class="QSpinBox" name="spinRadius">
+       <item row="12" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Raio (m)</string></property>
+        </widget>
+       </item>
+       <item row="12" column="1">
+        <widget class="QSpinBox" name="spinRadius">
          <property name="minimum"><number>0</number></property>
          <property name="maximum"><number>1000000</number></property>
          <property name="singleStep"><number>100</number></property>
          <property name="value"><number>1600</number></property>
-       </widget></item>
-       <item row="7" column="2">
+        </widget>
+       </item>
+       <item row="12" column="2">
         <widget class="QWidget" native="true">
          <layout class="QHBoxLayout" name="hlRadiusMode">
-          <item><widget class="QRadioButton" name="rbBand"><property name="text"><string>Band radius</string></property><property name="checked"><bool>true</bool></property></widget></item>
-          <item><widget class="QRadioButton" name="rbContinuous"><property name="text"><string>Continuous space</string></property></widget></item>
+          <item>
+           <widget class="QRadioButton" name="rbBand">
+            <property name="text"><string>Band radius</string></property>
+            <property name="checked"><bool>true</bool></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QRadioButton" name="rbContinuous">
+            <property name="text"><string>Continuous space</string></property>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>
 
-       <item row="8" column="0"><widget class="QLabel"><property name="text"><string>Weighting</string></property></widget></item>
-       <item row="8" column="1"><widget class="QComboBox" name="cbWeighting">
+       <item row="13" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Weighting</string></property>
+        </widget>
+       </item>
+       <item row="13" column="1">
+        <widget class="QComboBox" name="cbWeighting">
          <item><property name="text"><string>Link</string></property></item>
          <item><property name="text"><string>Node</string></property></item>
-       </widget></item>
+        </widget>
+       </item>
 
-       <item row="9" column="0"><widget class="QLabel"><property name="text"><string>Origin weight (opcional)</string></property></widget></item>
-       <item row="9" column="1" colspan="2"><widget class="QComboBox" name="cbOriginWeight"><property name="editable"><bool>true</bool></property></widget></item>
+       <item row="14" column="0">
+        <widget class="QLabel">
+         <property name="text"><string>Origin weight (opcional)</string></property>
+        </widget>
+       </item>
+       <item row="14" column="1" colspan="2">
+        <widget class="QComboBox" name="cbOriginWeight">
+         <property name="editable"><bool>true</bool></property>
+        </widget>
+       </item>
 
       </layout>
      </widget>
@@ -91,7 +213,7 @@
 
    <!-- Botões -->
    <item>
-    <widget class="QDialogButtonBox" name="button_box">
+    <widget class="QDialogButtonBox" name="buttonBox">
      <property name="orientation"><enum>Qt::Horizontal</enum></property>
      <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
      <property name="centerButtons"><bool>true</bool></property>
@@ -103,13 +225,13 @@
  <resources/>
  <connections>
   <connection>
-   <sender>button_box</sender>
+   <sender>buttonBox</sender>
    <signal>accepted()</signal>
    <receiver>ChasmDialogBase</receiver>
    <slot>accept()</slot>
   </connection>
   <connection>
-   <sender>button_box</sender>
+   <sender>buttonBox</sender>
    <signal>rejected()</signal>
    <receiver>ChasmDialogBase</receiver>
    <slot>reject()</slot>

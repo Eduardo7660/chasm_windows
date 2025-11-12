@@ -9,7 +9,7 @@ FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'chasm_calculator_dialog_base.ui'
 ))
 
-# índices das colunas (mantidos p/ compatibilidade)
+# índices das colunas (mantidos p/ compatibilidade futura)
 SHP1_COL  = 0
 COLS1_COL = 1
 GI1_COL   = 2
@@ -21,60 +21,81 @@ GO2_COL   = 7
 
 def _log(msg): QgsMessageLog.logMessage(str(msg), "Chasm", Qgis.Info)
 
+
 class ChasmDialog(QDialog, FORM_CLASS):
+    """
+    Diálogo principal do Chasm. Trabalha somente com camadas já carregadas no projeto QGIS.
+    Compatível com:
+      - cbPoligonoLayer, cbPoligonoIdField, cbGrupoInteresseField, cbGrupoOutriField
+      - cbNetworkLayer
+      - cbDW1..cbDW4 (Destination Weights editáveis)
+      - cbMetric, spinRadius, rbBand / rbContinuous, cbWeighting, cbOriginWeight
+      - btnFragmentLines
+      - buttonBox (Ok/Cancel)
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setupUi(self)
 
-        # widgets
+        # widgets auxiliares (tabela “fantasma” p/ compatibilidade com APIs antigas)
         self.tbl = getattr(self, 'tblPairs', None)
         if self.tbl is None:
-            # cria uma tabela oculta para manter compatibilidade com o código existente
             self.tbl = QTableWidget(self)
             self.tbl.setObjectName('tblPairs')
             self.tbl.setVisible(False)
+        self._ensure_pairs_table()
 
+        # atalhos
         self.txtStatus        = getattr(self, 'txtStatus', None)
         self.btnAddRow        = getattr(self, 'btnAddRow', None)
         self.btnRemoveRows    = getattr(self, 'btnRemoveRows', None)
         self.btnRefreshLayers = getattr(self, 'btnRefreshLayers', None)
-        # btnAddZips REMOVIDO
 
-        # tabela
-        self._ensure_pairs_table()
-
-        # botões (apenas os que eventualmente existirem no .ui)
+        # eventos de botões auxiliares (se existirem no .ui)
         if self.btnAddRow:        self.btnAddRow.clicked.connect(self.on_add_row)
         if self.btnRemoveRows:    self.btnRemoveRows.clicked.connect(self.on_remove_rows)
         if self.btnRefreshLayers: self.btnRefreshLayers.clicked.connect(self.refresh_all_layer_combos)
 
-        # sDNA
+        # sDNA: habilita/disable bidirecional conforme checkbox principal
         if hasattr(self, 'chkBetweenness'):
             self.chkBetweenness.toggled.connect(self._toggle_betweenness_children)
 
-        # Combos de rede (linhas) e polígonos
+        # Combos de camadas
         self._populate_network_layers()
+
+        # quando trocar a rede, recarrega os combos de DW
         if hasattr(self, 'cbNetworkLayer'):
             self.cbNetworkLayer.currentIndexChanged.connect(self._populate_attribute_combos_network)
 
+        # quando trocar os polígonos, recarrega ID e campos de grupo
         if hasattr(self, 'cbPoligonoLayer'):
             self.cbPoligonoLayer.currentIndexChanged.connect(self._on_polygon_layer_combo_changed)
-            self._on_polygon_layer_combo_changed()
 
+        # defaults visuais / UX
         if hasattr(self, 'cbMetric'):    self.cbMetric.setCurrentText("ANGULAR")
         if hasattr(self, 'cbWeighting'): self.cbWeighting.setCurrentText("Link")
+        if hasattr(self, 'cbOriginWeight'):
+            try:
+                # garante modo editável (o .ui já vem assim, mas por via das dúvidas)
+                self.cbOriginWeight.setEditable(True)
+            except Exception:
+                pass
 
-        # Preenche combos de atributos da rede
+        # preencher combos dependentes uma vez
+        self._on_polygon_layer_combo_changed()
         self._populate_attribute_combos_network()
 
-        self._append_status("Pronto. Use as combos de camadas já carregadas no projeto QGIS.")
+        self._append_status("Pronto. Selecione camadas e parâmetros; o processamento roda pelo botão do plugin.")
 
     # ---------- util ----------
     def _append_status(self, msg: str):
-        if self.txtStatus:
-            self.txtStatus.appendPlainText(str(msg))
+        try:
+            if self.txtStatus:
+                self.txtStatus.appendPlainText(str(msg))
+        except Exception:
+            pass
 
-    # ---------- tabela ----------
+    # ---------- tabela (compatibilidade) ----------
     def _ensure_pairs_table(self):
         self.tbl.setAlternatingRowColors(True)
         self.tbl.setSelectionBehavior(self.tbl.SelectRows)
@@ -134,7 +155,7 @@ class ChasmDialog(QDialog, FORM_CLASS):
         for r in rows: self.tbl.removeRow(r)
         self._append_status(f"Removidas {len(rows)} linha(s).")
 
-    # ---------- popular campos ----------
+    # ---------- popular campos (compat) ----------
     def _on_layer_changed(self, row: int, which: int):
         cmb_layer = self._ensure_cell_combo(row, SHP1_COL if which == 1 else SHP2_COL, False)
         cmb_gi    = self._ensure_cell_combo(row, GI1_COL  if which == 1 else GI2_COL, True)
@@ -268,6 +289,7 @@ class ChasmDialog(QDialog, FORM_CLASS):
         fill(self.cbDW2, "g_ou_exist")
         fill(self.cbDW3, "g_int_ns")
         fill(self.cbDW4, "g_ou_ns")
+        self._append_status("Destination Weights sugeridos: g_in_exist, g_ou_exist, g_int_ns, g_ou_ns.")
 
     # ===== helpers de campos =====
     def _fill_field_combo(self, combo: QComboBox, layer: QgsVectorLayer,
@@ -333,7 +355,7 @@ class ChasmDialog(QDialog, FORM_CLASS):
         _try_pick(grp_out, "grupo_outros", "go", "GO")
 
     def _auto_pick_polygon_id_field(self, poly_layer):
-        candidate_names = ['id', 'ID', 'gid', 'fid']
+        candidate_names = ['cod_setor', 'COD_SETOR', 'cd_setor', 'CD_SETOR', 'id', 'ID', 'gid', 'fid']
         names = [f.name() for f in poly_layer.fields()]
         for c in candidate_names:
             if c in names:
@@ -365,11 +387,10 @@ class ChasmDialog(QDialog, FORM_CLASS):
     # === Métodos esperados pelo chasm_calculator.py ===
     def selected_inputs(self):
         """
-        Lê a tabela e devolve uma lista de dicts (mantido p/ compatibilidade):
+        Lê a tabela 'tblPairs' e devolve uma lista de dicts (compatibilidade):
         {
-          'layer1_id': <polígono>, 'gi1': <texto>, 'go1': <texto>,
-          'layer2_id': <linha>,    'gi2': <texto>, 'go2': <texto>,
-          'cols1': [..], 'cols2': [..]
+          'layer1_id': <polígono>, 'gi1': <texto>, 'go1': <texto>, 'cols1': [...],
+          'layer2_id': <linha>,    'gi2': <texto>, 'go2': <texto>, 'cols2': [...]
         }
         """
         results = []
@@ -411,6 +432,10 @@ class ChasmDialog(QDialog, FORM_CLASS):
         return None
 
     def sdna_params(self):
+        """
+        Lê os parâmetros visuais da aba sDNA.
+        NOTA: O chasm_calculator.py realiza a resolução dinâmica dos nomes de parâmetros do algoritmo.
+        """
         bet = bool(getattr(self, 'chkBetweenness', None).isChecked()) if hasattr(self, 'chkBetweenness') else False
         betw_bi = bool(getattr(self, 'chkBetweennessBidirectional', None).isChecked()) if hasattr(self, 'chkBetweennessBidirectional') else False
         metric = self.cbMetric.currentText().strip() if hasattr(self, 'cbMetric') else "ANGULAR"
@@ -422,8 +447,9 @@ class ChasmDialog(QDialog, FORM_CLASS):
 
         origin_weight = self._read_text_like_combo(getattr(self, 'cbOriginWeight', None))
 
-        radius = 1000
-        for name in ('spnRadius', 'spinRadius', 'sbRadius', 'spinRadius'):
+        # radius
+        radius = 1600
+        for name in ('spinRadius', 'spnRadius', 'sbRadius'):
             if hasattr(self, name):
                 try:
                     radius = int(getattr(self, name).value())
@@ -431,6 +457,7 @@ class ChasmDialog(QDialog, FORM_CLASS):
                 except Exception:
                     pass
 
+        # radius mode
         radius_mode = "band"
         if hasattr(self, 'rbContinuous') and self.rbContinuous.isChecked():
             radius_mode = "radius"
@@ -468,7 +495,7 @@ class ChasmDialog(QDialog, FORM_CLASS):
         return ""
 
     def _dw_values_or_log(self):
-        names = ("cbDW1","cbDW2","cbDW3","cbDW4")
+        names = ("cbDW1", "cbDW2", "cbDW3", "cbDW4")
         vals = []
         missing = []
         for n in names:

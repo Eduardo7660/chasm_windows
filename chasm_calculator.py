@@ -238,6 +238,18 @@ class Chasm:
         finally:
             self._ok_running = False
 
+    # --- Resolve dinamicamente IDs de algoritmos do Processing (varia por versão) ---
+    def _algo_id(*candidates):
+        reg = QgsApplication.processingRegistry()
+        for a in candidates:
+            try:
+                if reg.algorithmById(a):
+                    return a
+            except Exception:
+                pass
+        raise RuntimeError(f"Nenhum algoritmo encontrado entre: {candidates}")
+
+
     # ------------------------------ Fragmentação (Processamento) ------------------------------
     def fragment_lines_by_polygons(self, line_layer, poly_layer, poly_id_field,
                         out_field_name="cod_setor",
@@ -870,35 +882,73 @@ class Chasm:
                 if not mem.isValid():
                     raise RuntimeError("Falha ao criar camada temporária em memória para exportação do sDNA.")
 
-            # Apenas o campo DW (normalizando para Double quando numérico)
+            # Campos: PolyLineId (INT) + DW (Double/String, conforme origem)
             src_idx = current.fields().indexOf(dw_field)
             src_qvar = current.fields()[src_idx].type()
-            out_field = QgsField(
-                dw_field,
+
+            polylineid_field = QgsField("PolyLineId", QVariant.Int)  # 10 chars, OK p/ SHP e padrão sDNA
+            dw_out_field = QgsField(
+                dw_field[:10],  # garante <=10 chars p/ SHP
                 QVariant.Double if src_qvar in (QVariant.Int, QVariant.LongLong, QVariant.Double) else QVariant.String
             )
 
             prov = mem.dataProvider()
-            prov.addAttributes([out_field])
+            prov.addAttributes([polylineid_field, dw_out_field])
             mem.updateFields()
 
-            use_idx = mem.fields().indexOf(dw_field)
+            id_idx = mem.fields().indexOf("PolyLineId")
+            dw_idx = mem.fields().indexOf(dw_out_field.name())
+
             feats = []
+            seq_id = 1
+
+            # Se a camada original já tiver um PolyLineId inteiro, preserva; senão, gera sequencial
+            orig_names = [f.name() for f in current.fields()]
+            orig_has_polyid = "PolyLineId" in orig_names or "polylineid" in [n.lower() for n in orig_names]
+            orig_poly_idx = None
+            if orig_has_polyid:
+                # pega com case exato se existir
+                if "PolyLineId" in orig_names:
+                    orig_poly_idx = current.fields().indexOf("PolyLineId")
+                else:
+                    # encontra versão case-insensitive
+                    for n in orig_names:
+                        if n.lower() == "polylineid":
+                            orig_poly_idx = current.fields().indexOf(n)
+                            break
+
             for f in current.getFeatures():
                 nf = QgsFeature(mem.fields())
                 nf.setGeometry(f.geometry())
+
+                # PolyLineId
+                if orig_poly_idx is not None:
+                    try:
+                        v = f[orig_poly_idx]
+                        v_int = int(v) if v is not None else seq_id
+                    except Exception:
+                        v_int = seq_id
+                else:
+                    v_int = seq_id
+                nf.setAttribute(id_idx, v_int)
+
+                # DW
                 val = f[dw_field]
-                if out_field.type() == QVariant.Double:
+                if dw_out_field.type() == QVariant.Double:
                     try:
                         val = float(val) if val not in (None, "") else 0.0
                     except Exception:
                         val = 0.0
                 else:
                     val = "" if val is None else str(val)
-                nf.setAttribute(use_idx, val)
+                nf.setAttribute(dw_idx, val)
+
                 feats.append(nf)
+                seq_id += 1
+
             prov.addFeatures(feats)
             mem.updateExtents()
+
             # --- salvar INPUT como SHP (robusto p/ sDNA) ---
             tmp_dir = tempfile.mkdtemp(prefix="chasm_sdna_")
             in_shp_base = f"in_{uuid.uuid4().hex[:6]}"
@@ -909,13 +959,14 @@ class Chasm:
             # 0) filtra geometrias válidas (linhas não têm área; $area IS NULL é ok)
             mem_no_empty = pr.run("native:extractbyexpression", {
                 "INPUT": mem,
-                "EXPRESSION": "geometry(@feature) IS NOT NULL AND $area IS NULL",
+                "EXPRESSION": "geometry(@feature) IS NOT NULL AND $length > 0",
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
 
             # 1) makevalid
             try:
-                mem_valid = pr.run("native:makevalid", {
+                mk_id = _algo_id("native:makevalid", "qgis:makevalid")
+                mem_valid = pr.run(mk_id, {
                     "INPUT": mem_no_empty,
                     "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
@@ -942,11 +993,23 @@ class Chasm:
 
             # 4) segmentize (opcional)
             try:
-                mem_2d_seg = pr.run("native:segmentize", {
-                    "INPUT": mem_2d,
-                    "MAX_EDGE": 0.0,
-                    "OUTPUT": "TEMPORARY_OUTPUT"
-                })["OUTPUT"]
+                seg_id = _algo_id("native:segmentizebymaxdistance",
+                                "native:segmentizebymaxangle",
+                                "qgis:densifygeometriesgivenaninterval")  # fallback aproximado
+                seg_params = {"INPUT": mem_2d, "OUTPUT": "TEMPORARY_OUTPUT"}
+
+                # define o parâmetro conforme o algoritmo escolhido
+                if seg_id.endswith("segmentizebymaxdistance"):
+                    # QGIS >= 3.22
+                    seg_params["MAX_SEG_LENGTH"] = 0.0
+                elif seg_id.endswith("segmentizebymaxangle"):
+                    # alternativo por ângulo (radianos)
+                    seg_params["MAX_ANGLE"] = 0.0
+                else:
+                    # qgis:densifygeometriesgivenaninterval (fallback)
+                    seg_params["INTERVAL"] = 0.0
+
+                mem_2d_seg = pr.run(seg_id, seg_params)["OUTPUT"]
             except Exception:
                 mem_2d_seg = mem_2d
 
@@ -963,10 +1026,10 @@ class Chasm:
                 "INPUT": mem_ready,
                 "FIELDS_MAPPING": [{
                     "expression": f"\"{dw_field}\"",
-                    "length": 20,
+                    "length": 64,
                     "name": safe_dw,
                     "precision": 6,
-                    "type": 0  # Double
+                    "type": 10  # Double
                 }],
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
@@ -1048,19 +1111,77 @@ class Chasm:
             if not self._wait_for_complete_shp(base_no_ext, timeout_s=240):
                 possible_csv = base_no_ext + ".csv"
                 if os.path.exists(possible_csv):
-                    self._log(f"sDNA gerou CSV em vez de SHP: {possible_csv}", Qgis.Warning, True)
+                    self._log(
+                        "sDNA gerou CSV em vez de SHP (provável INPUT sem PolyLineId ou incompatibilidade de driver).",
+                        Qgis.Warning, True
+                    )
                 raise RuntimeError(f"sDNA terminou mas o SHP de saída não ficou completo/estável: {out_shp}")
 
-            # carrega a saída do sDNA (SHP)
-            out_lyr = QgsVectorLayer(out_shp, f"{base_line_layer.name()}_sDNA_{dw_field}", "ogr")
-            if not out_lyr or not out_lyr.isValid():
-                time.sleep(0.5)
-                out_lyr = QgsVectorLayer(out_shp, f"{base_line_layer.name()}_sDNA_{dw_field}", "ogr")
-            if not out_lyr or not out_lyr.isValid():
-                raise RuntimeError(f"sDNA produziu saída mas o QGIS não conseguiu carregar: {out_shp}")
+            # sanity: sidecars existem e têm tamanho razoável?
+            try:
+                side_ok = all(os.path.exists(base_no_ext + ext) for ext in (".shp", ".shx", ".dbf"))
+                size_ok = side_ok and all(os.path.getsize(base_no_ext + ext) > 100 for ext in (".shp", ".shx", ".dbf"))
+            except Exception:
+                side_ok, size_ok = False, False
 
-            # NÃO removemos tmp_dir aqui: apagar quebraria a layer carregada.
+            # 1) tentativa direta
+            out_name = f"{base_line_layer.name()}_sDNA_{dw_field}"
+            out_lyr = None
+            if side_ok and size_ok:
+                out_lyr = QgsVectorLayer(out_shp, out_name, "ogr")
+                if not out_lyr or not out_lyr.isValid():
+                    # dá mais uma chance (latência de FS)
+                    time.sleep(0.5)
+                    out_lyr = QgsVectorLayer(out_shp, out_name, "ogr")
+
+            # 2) fallback: converter para GPKG com GDAL e carregar
+            if not out_lyr or not out_lyr.isValid():
+                try:
+                    gpkg_tmp = os.path.join(tmp_dir, f"{shp_base}.gpkg")
+                    vt = pr.run("gdal:vectortranslate", {
+                        "INPUT": out_shp,
+                        "OUTPUT": gpkg_tmp,
+                        "LAYER_NAME": "sdna",
+                        # opções extras que ajudam shapefiles “enjoados”
+                        "OPTIONS": "",
+                        "GEOMETRY": "PROMOTE_TO_MULTI",   # garante multilinhas se preciso
+                    })
+                    out_lyr = QgsVectorLayer(gpkg_tmp, out_name, "ogr")
+                except Exception as e:
+                    self._log(f"Fallback GPKG falhou: {e}", Qgis.Warning)
+
+            # 3) fallback alternativo: carregar em memória (TEMPORARY_OUTPUT) via vectortranslate
+            if not out_lyr or not out_lyr.isValid():
+                try:
+                    vt_mem = pr.run("gdal:vectortranslate", {
+                        "INPUT": out_shp,
+                        "OUTPUT": "TEMPORARY_OUTPUT",
+                        "LAYER_NAME": "sdna",
+                        "GEOMETRY": "PROMOTE_TO_MULTI",
+                    })
+                    out_lyr = vt_mem["OUTPUT"] if isinstance(vt_mem, dict) else vt_mem
+                    if out_lyr and hasattr(out_lyr, "setName"):
+                        out_lyr.setName(out_name)
+                except Exception as e:
+                    self._log(f"Fallback memória falhou: {e}", Qgis.Warning)
+
+            # 4) CSV detectado? Informe claramente o motivo provável
+            if (not out_lyr or not out_lyr.isValid()):
+                possible_csv = base_no_ext + ".csv"
+                if os.path.exists(possible_csv):
+                    raise RuntimeError(
+                        "sDNA gerou CSV (sem geometria). Verifique se o INPUT tem campo inteiro 'PolyLineId' "
+                        "e se o driver de saída está OK no ambiente."
+                    )
+
+            # sucesso final?
+            if not out_lyr or not out_lyr.isValid():
+                raise RuntimeError(f"sDNA terminou, mas a saída não pôde ser carregada (nem com fallbacks): {out_shp}")
+
+            # adiciona e segue
+            out_lyr.setName(out_name)
             return out_lyr
+
 
         # ===== Loop por DWs =====
         for dw in run_order:

@@ -239,7 +239,7 @@ class Chasm:
             self._ok_running = False
 
     # --- Resolve dinamicamente IDs de algoritmos do Processing (varia por versão) ---
-    def _algo_id(*candidates):
+    def _algo_id(self, *candidates):
         reg = QgsApplication.processingRegistry()
         for a in candidates:
             try:
@@ -965,7 +965,7 @@ class Chasm:
 
             # 1) makevalid
             try:
-                mk_id = _algo_id("native:makevalid", "qgis:makevalid")
+                mk_id = self._algo_id("native:makevalid", "qgis:makevalid")
                 mem_valid = pr.run(mk_id, {
                     "INPUT": mem_no_empty,
                     "OUTPUT": "TEMPORARY_OUTPUT"
@@ -993,9 +993,11 @@ class Chasm:
 
             # 4) segmentize (opcional)
             try:
-                seg_id = _algo_id("native:segmentizebymaxdistance",
-                                "native:segmentizebymaxangle",
-                                "qgis:densifygeometriesgivenaninterval")  # fallback aproximado
+                seg_id = self._algo_id(
+                    "native:segmentizebymaxdistance",
+                    "native:segmentizebymaxangle",
+                    "qgis:densifygeometriesgivenaninterval"  # fallback aproximado
+                )
                 seg_params = {"INPUT": mem_2d, "OUTPUT": "TEMPORARY_OUTPUT"}
 
                 # define o parâmetro conforme o algoritmo escolhido
@@ -1049,7 +1051,6 @@ class Chasm:
 
             # >>> IMPORTANTÍSSIMO: passe a usar o nome seguro
             dw_field = safe_dw
-
 
             # --- definir OUTPUT como SHP de nome curto ---
             shp_base = f"sdna_{uuid.uuid4().hex[:6]}"
@@ -1182,7 +1183,6 @@ class Chasm:
             out_lyr.setName(out_name)
             return out_lyr
 
-
         # ===== Loop por DWs =====
         for dw in run_order:
             out_lyr = _run_sdna_once(dw)
@@ -1198,7 +1198,8 @@ class Chasm:
             mad_field = None
             for f in out_lyr.fields():
                 if f.name().upper().startswith('MAD'):
-                    mad_field = f.name(); break
+                    mad_field = f.name()
+                    break
             if not mad_field:
                 raise RuntimeError(f"Campo MAD* não encontrado na saída do sDNA para DW '{dw}'.")
 
@@ -1246,7 +1247,6 @@ class Chasm:
             self._log(f"JOIN MAD resumo: DW={dw} saída='{out_name}' {mad_src} -> {mad_dst}", Qgis.Info)
         self._log(f"Etapa 2: concluída — camada final '{current.name()}'", Qgis.Success, True)
         return current
-
     # ------------------------------ RUN: abre diálogo e liga sinais ------------------------------
     def run(self):
         self._log("run(): abrindo diálogo...", Qgis.Info)

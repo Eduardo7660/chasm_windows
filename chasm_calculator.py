@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 import os
+import processing
 
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox, QDialogButtonBox
 from qgis.core import (
     QgsVectorLayer, QgsProject, QgsMessageLog, Qgis, QgsWkbTypes, QgsApplication,
-    QgsField, QgsProcessingFeedback
+    QgsField, QgsProcessingFeedback, QgsFeature, QgsVectorFileWriter
 )
 
 # resources é leve; se faltar, não derruba a classe
@@ -141,6 +142,34 @@ class Chasm:
                 return c
         return names[0] if names else None
 
+    def _find_sdna_executable_path(self):
+        """
+        Procura o executável sdnaintegral.exe em locais comuns no Windows.
+        Retorna o caminho completo se encontrado, senão None.
+        """
+        # Em Linux/Mac, o comando pode não ter extensão
+        script_name = "sdnaintegral.exe" if os.name == 'nt' else "sdnaintegral"
+
+        # 1. Tenta via QGIS Settings (mais confiável)
+        try:
+            sdna_root = QSettings().value("sdna/installfolder", "")
+            bin_path = os.path.join(sdna_root, "bin") if sdna_root else ""
+            if bin_path and os.path.exists(os.path.join(bin_path, script_name)):
+                return os.path.join(bin_path, script_name)
+        except Exception:
+            pass
+
+        # 2. Tenta via PATH
+        from shutil import which
+        if which(script_name):
+            return which(script_name)
+        
+        # Fallback para o nome sem extensão no Windows
+        if os.name == 'nt' and which("sdnaintegral"):
+            return which("sdnaintegral")
+
+        return None # Não encontrado
+
     # ------------------------------ GUI ------------------------------
     def add_action(self, icon_path, text, callback, enabled_flag=True,
                    add_to_menu=True, add_to_toolbar=True, status_tip=None,
@@ -159,6 +188,71 @@ class Chasm:
         self.actions.append(action)
         return action
 
+    def _check_and_install_sdna(self):
+        """Verifica se sDNA-plus está instalado e oferece para instalar se não estiver."""
+        # A verificação mais simples é tentar importar. Se funcionar, está tudo OK.
+        try:
+            import sdnapy
+            self._log(f"Dependência 'sDNA-plus' encontrada.", Qgis.Info)
+            return True
+        except ImportError:
+            pass # Continua para a instalação
+
+        self._log("Dependência 'sDNA-plus' não encontrada.", Qgis.Warning, True)
+        reply = QMessageBox.question(
+            self.iface.mainWindow(),
+            "Dependência Necessária",
+            "O plugin 'Chasm Calculator' precisa do pacote 'sDNA-plus' para funcionar.\n\n"
+            "Deseja tentar instalá-lo agora? (Requer conexão com a internet)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.No:
+            self._msg("Instalação cancelada. O plugin não pode continuar sem suas dependências.", Qgis.Warning)
+            return False
+
+        import sys, subprocess
+        self._msg("Instalando sDNA-plus... Isso pode levar alguns minutos.", Qgis.Info, 15)
+        try:
+            # --- Passo 1: Garantir que pipx esteja instalado ---
+            self._log("Verificando se 'pipx' está instalado...", Qgis.Info)
+            kwargs = {}
+            # No Windows, evitamos que uma janela de console pisque, o que pode travar o QGIS.
+            if os.name == 'nt':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+            try:
+                # Tenta executar 'pipx --version'. Se falhar, o pipx não está instalado/no path.
+                subprocess.check_call([sys.executable, '-m', 'pipx', '--version'], **kwargs) # Usar python -m pipx é mais robusto
+                self._log("'pipx' já está disponível.", Qgis.Info)
+            except Exception: # Captura qualquer erro (FileNotFound, CalledProcessError, etc)
+                self._log("'pipx' não encontrado. Tentando instalar via pip...", Qgis.Warning)
+                self._msg("Primeiro passo: instalando 'pipx'...", Qgis.Info, 10)
+                subprocess.check_call(
+                    [sys.executable, '-m', 'pip', 'install', 'pipx'], **kwargs
+                )
+                self._log("'pipx' instalado com sucesso.", Qgis.Info)
+                # Garante que o path do pipx seja reconhecido para a próxima chamada
+                self._log("Garantindo que o path do pipx seja reconhecido...", Qgis.Info)
+                subprocess.check_call(
+                    [sys.executable, '-m', 'pipx', 'ensurepath'], **kwargs
+                )
+
+            # --- Passo 2: Instalar sDNA-plus usando pipx ---
+            self._log("Instalando 'sDNA-plus' com 'pipx'...", Qgis.Info)
+            self._msg("Segundo passo: instalando 'sDNA-plus' com 'pipx'...", Qgis.Info, 15)
+            subprocess.check_call(
+                [sys.executable, '-m', 'pipx', 'install', 'sDNA-plus'], **kwargs
+            )
+
+            self._log("Pacote 'sDNA-plus' instalado com sucesso! Por favor, reinicie o QGIS.", Qgis.Success, True)
+            QMessageBox.information(self.iface.mainWindow(), "Instalação Concluída", "sDNA-plus foi instalado com sucesso.\n\nPor favor, reinicie o QGIS para ativar o plugin.")
+            return False # Retorna False para não tentar abrir o diálogo nesta sessão
+        except Exception as e:
+            self._log(f"Falha ao instalar 'sDNA-plus': {e}", Qgis.Critical, True)
+            return False
+
     def initGui(self):
         icon_path = ':/plugins/chasm_calculator/icon.png'
         self.add_action(icon_path, text=self.tr(u'Chasm Calculator'),
@@ -175,8 +269,7 @@ class Chasm:
             self._sdna_integral_alg_id = None
             self._log("initGui: provider Processing não disponível no momento.", Qgis.Warning)
 
-        # status do sDNA-plus (sdnapy)
-        self._log(f"sDNA-plus (sdnapy) disponível? {_SDNA_PY_OK} v={_SDNA_PY_VERSION}", Qgis.Info)
+        # A verificação de dependências foi movida para o método run()
 
     def unload(self):
         for action in self.actions:
@@ -279,6 +372,25 @@ class Chasm:
                         poly_group_interest_field="grupo_interesse",
                         poly_group_others_field="grupo_outros"):
         
+        import uuid
+        run_uid = uuid.uuid4().hex[:8]
+        debug_dir = r"C:\chasm\debug_steps"
+        if not os.path.exists(debug_dir):
+            os.makedirs(debug_dir, exist_ok=True)
+
+        def _save_debug_copy(layer, step_name: str):
+            """Salva uma cópia de uma camada intermediária para depuração."""
+            if not layer or not hasattr(layer, "isValid") or not layer.isValid():
+                self._log(f"[DEBUG] Pular salvar '{step_name}': camada inválida.", Qgis.Warning)
+                return
+            
+            out_path = os.path.join(debug_dir, f"{step_name}_{run_uid}.shp")
+            self._log(f"[DEBUG] Salvando cópia: '{out_path}'", Qgis.Info)
+            processing.run("native:savefeatures", {
+                "INPUT": layer,
+                "OUTPUT": out_path
+            })
+
         def clean_filename(name: str) -> str:
             """
             Remove caracteres inválidos e converte tudo para um formato seguro de SHP.
@@ -309,7 +421,6 @@ class Chasm:
 
             return name
         self._log("Etapa 1: iniciando fragmentação...", Qgis.Info, True)
-        import processing
 
         if line_layer is None or poly_layer is None:
             raise RuntimeError("Camadas de linha e polígono são obrigatórias.")
@@ -323,24 +434,29 @@ class Chasm:
         self._log(f"Etapa 1.1: fix geometries linhas='{line_layer.name()}', polígonos='{poly_layer.name()}'", Qgis.Info)
         fixed_lines = processing.run("native:fixgeometries",
             {"INPUT": line_layer, "OUTPUT": "TEMPORARY_OUTPUT"})["OUTPUT"]
+        _save_debug_copy(fixed_lines, "01_fixed_lines")
+
         fixed_polys = processing.run("native:fixgeometries",
             {"INPUT": poly_layer, "OUTPUT": "TEMPORARY_OUTPUT"})["OUTPUT"]
+        _save_debug_copy(fixed_polys, "02_fixed_polygons")
 
         if fixed_polys.crs() != fixed_lines.crs():
             self._log(f"Etapa 1.2: reproject polígonos -> {fixed_lines.crs().authid()}", Qgis.Info)
             fixed_polys = processing.run("native:reprojectlayer",
                 {"INPUT": fixed_polys, "TARGET_CRS": fixed_lines.crs(), "OUTPUT": "TEMPORARY_OUTPUT"})["OUTPUT"]
+            _save_debug_copy(fixed_polys, "03_reprojected_polygons")
 
         self._log("Etapa 1.3: intersection (trazendo id do setor)", Qgis.Info)
         inter = processing.run("native:intersection", {
             "INPUT": fixed_lines,
             "OVERLAY": fixed_polys,
-            "OVERLAY_FIELDS": [poly_id_field],
+            "OVERLAY_FIELDS": [poly_id_field, poly_group_interest_field, poly_group_others_field],
             "OUTPUT": "TEMPORARY_OUTPUT"
         })["OUTPUT"]
+        _save_debug_copy(inter, "04_intersection")
 
         self._log("Etapa 1.4: criando/garantindo campo de setor nas linhas", Qgis.Info)
-        if out_field_name not in [f.name() for f in inter.fields()]:
+        if out_field_name not in [f.name() for f in inter.fields()] and poly_id_field in [f.name() for f in inter.fields()]:
             inter = processing.run("native:fieldcalculator", {
                 "INPUT": inter,
                 "FIELD_NAME": out_field_name,
@@ -348,6 +464,7 @@ class Chasm:
                 "FORMULA": f'"{poly_id_field}"',
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
+            _save_debug_copy(inter, "05_with_cod_setor")
 
         self._log("Etapa 1.5: calculando length_m", Qgis.Info)
         with_len = processing.run("native:fieldcalculator", {
@@ -357,6 +474,7 @@ class Chasm:
             "FORMULA": "$length",
             "OUTPUT": "TEMPORARY_OUTPUT"
         })["OUTPUT"]
+        _save_debug_copy(with_len, "06_with_length")
 
         self._log("Etapa 1.6: criando line_sector_id", Qgis.Info)
         with_concat = processing.run("native:fieldcalculator", {
@@ -366,6 +484,7 @@ class Chasm:
             "FORMULA": f"to_string($id) || '_' || \"{out_field_name}\"",
             "OUTPUT": "TEMPORARY_OUTPUT"
         })["OUTPUT"]
+        _save_debug_copy(with_concat, "07_with_line_sector_id")
 
         # --- Preparos para distribuição ---
         names_poly = [f.name() for f in fixed_polys.fields()]
@@ -472,6 +591,7 @@ class Chasm:
             f"Etapa 1.11: ✓ Atualizados {total_updates} segmentos (featureCount={feat_count}).",
             Qgis.Success, True
         )
+        _save_debug_copy(with_concat, "08_distributed_values")
 
         # Soma por setor nos polígonos
         self._log("Etapa 1.12: somando g_in_exist/g_ou_exist por setor nos polígonos", Qgis.Info)
@@ -500,6 +620,7 @@ class Chasm:
             fixed_polys.changeAttributeValue(pf.id(), go_s_idx, go_s)
         fixed_polys.commitChanges()
         self._log("Etapa 1.13: polígonos atualizados com somas.", Qgis.Info)
+        _save_debug_copy(fixed_polys, "09_polygons_with_sums")
 
         # --- Deixa a camada pronta para sDNA: single-part, 2D (sem M/Z) e com geometrias corrigidas ---
         self._log(
@@ -508,28 +629,29 @@ class Chasm:
             Qgis.Info, True
         )
 
-        import processing as pr, os, uuid
-
         # 1) multipart → singlepart
-        lyr_proc = pr.run("native:multiparttosingleparts", {
+        lyr_proc = processing.run("native:multiparttosingleparts", {
             "INPUT": with_concat,
             "OUTPUT": "TEMPORARY_OUTPUT"
         })["OUTPUT"]
+        _save_debug_copy(lyr_proc, "10_singlepart")
 
         # 2) remover M/Z (fica só 2D)
-        lyr_proc = pr.run("native:dropmzvalues", {
+        lyr_proc = processing.run("native:dropmzvalues", {
             "INPUT": lyr_proc,
             "DROP_M_VALUES": True,
             "DROP_Z_VALUES": True,
             "OUTPUT": "TEMPORARY_OUTPUT"
         })["OUTPUT"]
+        _save_debug_copy(lyr_proc, "11_drop_mz")
 
         # 3) fix geometries
-        lyr_proc = pr.run("native:fixgeometries", {
+        lyr_proc = processing.run("native:fixgeometries", {
             "INPUT": lyr_proc,
             "OUTPUT": "TEMPORARY_OUTPUT"
         })["OUTPUT"]
 
+        _save_debug_copy(lyr_proc, "12_final_fix_geometries")
         # agora essa é a camada “oficial” da Etapa 1
         with_concat = lyr_proc
         with_concat.setCrs(fixed_lines.crs())
@@ -539,10 +661,9 @@ class Chasm:
         if not os.path.exists(base_dir):
             os.makedirs(base_dir, exist_ok=True)
 
-        uid = uuid.uuid4().hex[:6]
         out_shp_path = os.path.join(
             base_dir,
-            f"{line_layer.name()}_fragmented_by_{poly_layer.name()}_{uid}.shp"
+            f"{line_layer.name()}_fragmented_by_{poly_layer.name()}_{run_uid}.shp"
         )
 
         self._log(
@@ -550,7 +671,7 @@ class Chasm:
             Qgis.Info, True
         )
 
-        pr.run("native:savefeatures", {
+        processing.run("native:savefeatures", {
             "INPUT": with_concat,
             "OUTPUT": out_shp_path
         })
@@ -560,12 +681,12 @@ class Chasm:
         safe_name = clean_filename(raw_name)
 
         # Caminho final do SHP
-        out_shp = f"C:\\chasm\\{safe_name}.shp"
+        out_shp = os.path.join(r"C:\chasm", f"{safe_name}.shp")
 
         self._log(f"Etapa 1.16: salvando camada final como SHP limpo: {out_shp}", Qgis.Info)
 
         # Exportar o SHP final
-        pr.run("native:savefeatures", {
+        processing.run("native:savefeatures", {
             "INPUT": with_concat,
             "OUTPUT": out_shp
         })
@@ -578,281 +699,28 @@ class Chasm:
 
         QgsProject.instance().addMapLayer(final_layer)
 
-        self._log(f"Etapa 1.17: SHP salvo e carregado: {safe_name}", Qgis.Success, True)
+        self._log(f"Etapa 1.17: SHP salvo e carregado: '{safe_name}'", Qgis.Success, True)
 
         return final_layer
-
-    def _resolve_sdna_param_keys(self, alg_id):
-        """
-        Descobre dinamicamente as chaves de parâmetros do sDNA Integral da tua build.
-        Retorna um dicionário com:
-        input_key, output_key,
-        destw_key, bet_key, bet_bi_key, junctions_key, hull_key,
-        start_gs_key, end_gs_key,
-        analmet_key, analmet_options,
-        radii_key, bandedradii_key, cont_key,
-        weighting_key, weighting_options,
-        origweight_key, custommetric_key,
-        zonefiles_key, odfile_key, disable_key, oneway_key, intermediates_key, advanced_key
-        """
-        from qgis.core import QgsApplication
-        alg = QgsApplication.processingRegistry().algorithmById(alg_id)
-        if alg is None:
-            self._log(f"Introspec: algoritmo '{alg_id}' não encontrado.", Qgis.Critical, True)
-            return
-
-        # iniciais
-        input_key = output_key = destw_key = None
-        bet_key = bet_bi_key = junctions_key = hull_key = None
-        start_gs_key = end_gs_key = None
-        analmet_key = None
-        radmet_key = None
-        analmet_options = []
-        radii_key = bandedradii_key = cont_key = None
-        weighting_key = None
-        weighting_options = []
-        origweight_key = custommetric_key = None
-        zonefiles_key = odfile_key = None
-        disable_key = oneway_key = intermediates_key = advanced_key = None
-
-        def lower(s):
-            try:
-                return (s or "").lower()
-            except Exception:
-                return ""
-
-        # varre parâmetros
-        for p in alg.parameterDefinitions():
-            n = p.name()
-            ln = lower(n)
-            try:
-                ld = lower(p.description())
-            except Exception:
-                ld = ""
-
-            # INPUT / OUTPUT
-            if input_key is None and (ln == "input" or "input" in ln or "polyline" in ld or "network" in ld):
-                input_key = n
-
-            if radmet_key is None and (ln == "radmet" or "radmet" in ln or "radmet" in ld or "radius metric" in ld):
-                radmet_key = n
-
-            # DESTINATION WEIGHT
-            if destw_key is None and (ln == "destweight" or ("dest" in ln and "weight" in ln) or ("destination" in ld and "weight" in ld)):
-                destw_key = n
-
-            # Betweenness / Bidirectional
-            if bet_key is None and ("betweenness" in ln):
-                bet_key = n
-            if bet_bi_key is None and (ln in ("bidir", "bidirectional", "bidirection", "bi") or "bidirectional" in ld):
-                bet_bi_key = n
-
-            # Junctions / Hull
-            if junctions_key is None and ("junctions" in ln or "junction" in ln or "junc" in ln or "junction" in ld):
-                junctions_key = n
-            if hull_key is None and ("hull" in ln or "convex" in ln or "hull" in ld or "convex" in ld):
-                hull_key = n
-
-            # Grade separation
-            if start_gs_key is None and ("start_gs" in ln or "start grade" in ld):
-                start_gs_key = n
-            if end_gs_key is None and ("end_gs" in ln or "end grade" in ld):
-                end_gs_key = n
-
-            # Métrica (enum)
-            if analmet_key is None and ("analmet" in ln or ("metric" in ld and "analysis" in ld)):
-                analmet_key = n
-                try:
-                    if hasattr(p, "options") and callable(getattr(p, "options")):
-                        analmet_options = list(p.options())
-                except Exception:
-                    pass
-
-            # Raios + modos
-            if radii_key is None and ("radii" in ln or ("radii" in ld) or (ln == "radius" and "string" in ld)):
-                radii_key = n
-            if bandedradii_key is None and ("bandedradii" in ln or ("band" in ld and "radius" in ld)):
-                bandedradii_key = n
-            if cont_key is None and (ln == "cont" or ("continuous" in ld)):
-                cont_key = n
-
-            # Weighting (enum)
-            if weighting_key is None and (ln == "weighting" or ("weighting" in ld)):
-                weighting_key = n
-                try:
-                    if hasattr(p, "options") and callable(getattr(p, "options")):
-                        weighting_options = list(p.options())
-                except Exception:
-                    pass
-
-            # Origin/custom weights
-            if origweight_key is None and ("origweight" in ln or ("origin" in ld and "weight" in ld)):
-                origweight_key = n
-            if custommetric_key is None and ("custommetric" in ln or ("custom metric" in ld)):
-                custommetric_key = n
-
-            # Arquivos/flags adicionais
-            if zonefiles_key is None and (ln == "zonefiles" or ("zone" in ld and "csv" in ld)):
-                zonefiles_key = n
-            if odfile_key is None and (ln == "odfile" or ("origin" in ld and "destination" in ld)):
-                odfile_key = n
-            if disable_key is None and (ln == "disable" or "disable" in ld):
-                disable_key = n
-            if oneway_key is None and (ln == "oneway" or "one way" in ld):
-                oneway_key = n
-            if intermediates_key is None and (ln == "intermediates" or "intermediate" in ld):
-                intermediates_key = n
-            if advanced_key is None and (ln == "advanced" or "advanced config" in ld):
-                advanced_key = n
-
-        # OUTPUT
-        for o in alg.outputDefinitions():
-            on = o.name()
-            if output_key is None and "output" in lower(on):
-                output_key = on
-
-        return {
-            "input_key": input_key,
-            "output_key": output_key,
-            "destw_key": destw_key,
-            "bet_key": bet_key,
-            "bet_bi_key": bet_bi_key,
-            "junctions_key": junctions_key,
-            "hull_key": hull_key,
-            "start_gs_key": start_gs_key,
-            "end_gs_key": end_gs_key,
-            "analmet_key": analmet_key,
-            "analmet_options": analmet_options,
-            "radii_key": radii_key,
-            "bandedradii_key": bandedradii_key,
-            "cont_key": cont_key,
-            "weighting_key": weighting_key,
-            "weighting_options": weighting_options,
-            "origweight_key": origweight_key,
-            "custommetric_key": custommetric_key,
-            "zonefiles_key": zonefiles_key,
-            "odfile_key": odfile_key,
-            "disable_key": disable_key,
-            "radmet_key": radmet_key,
-            "oneway_key": oneway_key,
-            "intermediates_key": intermediates_key,
-            "advanced_key": advanced_key,
-        }
-
-    def _introspect_sdna_params(self, alg_id):
-        """
-        Loga TODOS os parâmetros/saídas do algoritmo sDNA detectado.
-        Útil para auditar diferenças entre builds (evita KeyError surpresa).
-        """
-        from qgis.core import QgsApplication, Qgis
-        alg = QgsApplication.processingRegistry().algorithmById(alg_id)
-        if alg is None:
-            self._log(f"Introspec: algoritmo '{alg_id}' não encontrado.", Qgis.Critical, True)
-            return
-
-        try:
-            lines = []
-            lines.append(f"[Introspec] Alg: {alg.id()} — {alg.displayName()}")
-            lines.append("Parâmetros:")
-            for p in alg.parameterDefinitions():
-                n = p.name()
-                cls = p.__class__.__name__
-                try:
-                    desc = p.description() or ""
-                except Exception:
-                    desc = ""
-                extra = ""
-                # tenta listar opções se for enum
-                try:
-                    if hasattr(p, "options") and callable(getattr(p, "options")):
-                        extra = f" options={list(p.options())}"
-                    elif hasattr(p, "mOptions"):
-                        extra = f" options={list(getattr(p, 'mOptions'))}"
-                except Exception:
-                    pass
-                lines.append(f"  - {n} ({cls}) desc='{desc}'{extra}")
-            lines.append("Saídas:")
-            for o in alg.outputDefinitions():
-                lines.append(f"  - {o.name()} ({o.__class__.__name__})")
-            msg = "\n".join(lines)
-            self._log(msg, Qgis.Info, True, duration=12)
-        except Exception as e:
-            self._log(f"Introspec falhou: {e}", Qgis.Warning, True)
 
     # ------------------------------ Runner sDNA + JOIN MAD (2a + 2b) ------------------------------
     def _sdna_integral_and_join_mad(self, base_line_layer, sdna_ui_params=None):
         """
-        Executa sDNA Integral + JOIN do campo MAD resultante de cada DW.
-        Exporta sempre para SHP físico de entrada (C:\chasm), aguarda escrita estabilizar
-        e deixa o provider do sDNA decidir o caminho de saída (TEMPORARY_OUTPUT).
+        Executa sDNA Integral via linha de comando e faz o JOIN do campo MAD resultante.
+        É mais robusto por não depender do QGIS Processing Provider.
         """
-        import os, uuid, time, re, tempfile, shutil, subprocess
-        import processing as pr
-        from qgis.core import (
-            Qgis, QgsProject, QgsApplication, QgsVectorLayer,
-            QgsVectorFileWriter, QgsFields, QgsField, QgsFeature, QgsWkbTypes
-        )
-        from qgis.PyQt.QtCore import QVariant
+        import uuid, time, re, tempfile, shutil, subprocess
 
         self._log("Etapa 2: iniciando sDNA (2a) + JOIN MAD (2b)...", Qgis.Info, True)
 
-        # === Descobre ID do algoritmo sDNA Integral ===
-        alg_id = self._sdna_integral_alg_id or self._find_sdna_integral_alg()
-        if not alg_id:
-            raise RuntimeError("Algoritmo sDNA Integral não encontrado no Processing.")
-
-        # pega defaults reais do algoritmo (incluindo radmet)
-        alg = QgsApplication.processingRegistry().algorithmById(alg_id)
-        defaults_map = {}
-        if alg is not None:
-            try:
-                for p in alg.parameterDefinitions():
-                    try:
-                        defaults_map[p.name()] = p.defaultValue()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-        # === Descobre chaves do algoritmo (dinâmico) ===
-        keys = self._resolve_sdna_param_keys(alg_id)
-
-        # Extrai mapeamentos
-        input_key        = keys.get("input_key")
-        output_key       = keys.get("output_key")
-        destw_key        = keys.get("destw_key")
-        bet_key          = keys.get("bet_key")
-        bet_bi_key       = keys.get("bet_bi_key")
-        junctions_key    = keys.get("junctions_key")
-        hull_key         = keys.get("hull_key")
-        start_gs_key     = keys.get("start_gs_key")
-        end_gs_key       = keys.get("end_gs_key")
-        analmet_key      = keys.get("analmet_key")
-        analmet_options  = keys.get("analmet_options")
-        radii_key        = keys.get("radii_key")
-        radmet_key       = keys.get("radmet_key")
-
-        bandedradii_key  = keys.get("bandedradii_key")
-        cont_key         = keys.get("cont_key")
-        weighting_key    = keys.get("weighting_key")
-        weighting_options= keys.get("weighting_options")
-        origweight_key   = keys.get("origweight_key")
-        custommetric_key = keys.get("custommetric_key")
-        zonefiles_key    = keys.get("zonefiles_key")
-        odfile_key       = keys.get("odfile_key")
-        disable_key      = keys.get("disable_key")
-        oneway_key       = keys.get("oneway_key")
-        intermediates_key= keys.get("intermediates_key")
-        advanced_key     = keys.get("advanced_key")
-
-        # Sanidade mínima
-        if not input_key or not destw_key:
+        # === Encontra o executável sdnaintegral.exe ===
+        sdna_exe = self._find_sdna_executable_path()
+        if not sdna_exe:
             raise RuntimeError(
-                "Não foi possível mapear parâmetros essenciais do sDNA "
-                f"(INPUT='{input_key}', DESTW='{destw_key}')."
+                "Executável 'sdnaintegral.exe' não encontrado. "
+                "Verifique se o sDNA+ está instalado e configurado no QGIS."
             )
-        if not analmet_key:
-            raise RuntimeError("Parâmetro de métrica 'analmet' não encontrado nesta build do sDNA.")
+        self._log(f"sDNA: usando executável '{sdna_exe}'", Qgis.Info)
 
         # ---- parâmetros vindos da UI (com defaults) ----
         metric_val_str     = "ANGULAR"
@@ -886,36 +754,6 @@ class Chasm:
             else:
                 dest_weights = ["g_in_exist", "g_ou_exist", "g_int_ns", "g_ou_ns"]
 
-        # Helpers de enum → índice
-        def enum_index(value_str, options, default_idx=None):
-            if options is None or len(options) == 0:
-                return default_idx
-            v = (value_str or "").strip().upper()
-            for i, opt in enumerate(options):
-                if str(opt).strip().upper() == v:
-                    return i
-            for i, opt in enumerate(options):
-                s = str(opt).strip().upper()
-                if s.startswith(v) or v.startswith(s):
-                    return i
-            return default_idx
-
-        # analmet -> índice
-        analmet_idx = enum_index(metric_val_str, analmet_options, default_idx=0)
-        if analmet_options and metric_val_str == "CUSTOM" and not custom_metric_field:
-            self._log("sDNA: 'CUSTOM' sem campo custommetric — fallback para 'ANGULAR'.", Qgis.Warning, True)
-            analmet_idx = enum_index("ANGULAR", analmet_options, default_idx=0)
-
-        # weighting -> índice (se enum)
-        def normalize_weighting(val_raw, options):
-            if not val_raw:
-                return None
-            if options and isinstance(options, (list, tuple)):
-                return enum_index(val_raw, options, default_idx=None)
-            return val_raw
-
-        weighting_val = normalize_weighting(weighting_val_raw, weighting_options)
-
         banded_val = (radius_mode_str == "band")
         cont_val   = (radius_mode_str == "continuous")
         # radii precisa ser string. Se for 'banded', o sDNA espera um 0 no início.
@@ -932,27 +770,18 @@ class Chasm:
         }
         run_order = [dw for dw in dest_weights if dw]
 
-        self._log(
-            "Etapa 2a: mapa sDNA → "
-            f"INPUT='{input_key}', DESTW='{destw_key}', OUTPUT='{output_key}', "
-            f"ANALMET idx={analmet_idx}, RADII='{radii_key}', WEIGHTING='{weighting_key}'",
-            Qgis.Info, True
-        )
-
         current = base_line_layer
         results_info = []
 
         def _run_sdna_once(dw_field: str):
             """
-            Roda o sDNA Integral via *Processing Provider* (sDNA Provider:Integral Analysis).
-            Cria INPUT em C:\\chasm, e deixa o provider criar a saída (TEMPORARY_OUTPUT).
+            Roda o sDNA Integral via linha de comando (subprocess).
+            Cria INPUT e OUTPUT em C:\\chasm.
             """
             import os, uuid, re
-            import processing as pr
-            from qgis.core import QgsVectorLayer, QgsProcessingFeedback
 
             # --- 0) Garantir que C:\chasm existe ---
-            base_dir = r"C:\chasm"
+            base_dir = r"C:\\chasm"
             if not os.path.exists(base_dir):
                 os.makedirs(base_dir, exist_ok=True)
 
@@ -970,12 +799,12 @@ class Chasm:
 
             # --- 2) Single-part + fix geometries ---
             self._log("sDNA Prep: convertendo para single-part + fix geometries", Qgis.Info)
-            mem_singlepart = pr.run("native:multiparttosingleparts", {
+            mem_singlepart = processing.run("native:multiparttosingleparts", {
                 "INPUT": current,
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
 
-            mem_clean = pr.run("native:fixgeometries", {
+            mem_clean = processing.run("native:fixgeometries", {
                 "INPUT": mem_singlepart,
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
@@ -990,7 +819,7 @@ class Chasm:
             safe_dw = re.sub(r"[^A-Za-z0-9_]+", "_", dw_field)[:10] or "DW"
 
             self._log(f"sDNA Prep (1/3): criando SHP com campo de peso '{safe_dw}' em '{in_shp_1}'", Qgis.Info)
-            res1 = pr.run("native:fieldcalculator", {
+            res1 = processing.run("native:fieldcalculator", {
                 "INPUT": mem_clean,
                 "FIELD_NAME": safe_dw,
                 "FIELD_TYPE": 0,  # Float
@@ -1011,7 +840,7 @@ class Chasm:
                 )
 
             self._log(f"sDNA Prep (2/3): adicionando PolyLineId em '{in_shp_2}'", Qgis.Info)
-            res2 = pr.run("native:fieldcalculator", {
+            res2 = processing.run("native:fieldcalculator", {
                 "INPUT": res1["OUTPUT"],
                 "FIELD_NAME": "PolyLineId",
                 "FIELD_TYPE": 1,  # Integer
@@ -1034,142 +863,50 @@ class Chasm:
 
             self._log(f"sDNA: INPUT final para provider = '{in_shp}'", Qgis.Info)
 
-            # --- 4) Prepara parâmetro de saída (caminho explícito em disco) ---
-            output_param_key = output_key or "OUTPUT"
-            if alg is not None:
-                try:
-                    param_names = [p.name() for p in alg.parameterDefinitions()]
-                except Exception:
-                    param_names = []
-                # garante que o nome bate com o algoritmo
-                if output_param_key not in param_names:
-                    if "OUTPUT" in param_names:
-                        output_param_key = "OUTPUT"
-                    elif "output" in param_names:
-                        output_param_key = "output"
-
+            # --- 4) Prepara caminho de saída ---
             out_shp = os.path.join(base_dir, f"out_{dw_field}_{uid}.shp")
 
+            # --- 5) Monta o comando para o subprocess (como validado no terminal) ---
+            # Ex: "metric=angular;radii=1600;destweight=g_in_exist"
+            config_str = f"metric={metric_val_str.lower()};radii={radii_str};destweight={safe_dw}"
+            if bet_val:
+                config_str += ";betweenness"
+                if bet_bi_val:
+                    config_str += ";bidir"
+
+            cmd = [sdna_exe, "-i", in_shp, "-o", out_shp, config_str]
+
             self._log(
-                f"sDNA: usando parâmetro de saída '{output_param_key}' -> '{out_shp}'.",
-                Qgis.Info
-            )
-
-            # --- 5) Monta parâmetros pro provider sDNA ---
-            params = {
-                input_key:        in_shp,          # caminho do SHP
-                destw_key:        safe_dw,         # campo DW seguro
-                output_param_key: out_shp,         # caminho explícito da saída
-            }
-
-            # Métrica / raios / modo
-            if analmet_key is not None:
-                params[analmet_key] = analmet_idx
-            if radii_key is not None:
-                params[radii_key] = radii_str
-            if bandedradii_key is not None:
-                params[bandedradii_key] = banded_val
-            if cont_key is not None:
-                params[cont_key] = cont_val
-
-            # Betweenness / bidir
-            if bet_key is not None:
-                params[bet_key] = bet_val
-            if bet_bi_key is not None:
-                params[bet_bi_key] = bet_bi_val if bet_val else False
-
-            # Weighting
-            if weighting_key is not None and weighting_val is not None:
-                params[weighting_key] = weighting_val
-
-            # Pesos de origem / métrica custom
-            if origweight_key is not None:
-                params[origweight_key] = origin_weight_val or ""
-            if custommetric_key is not None:
-                params[custommetric_key] = (
-                    custom_metric_field if (metric_val_str == "CUSTOM" and custom_metric_field) else ""
-                )
-
-            # Radial metric
-            if radmet_key is not None:
-                params[radmet_key] = defaults_map.get(radmet_key, 0)
-
-            # Flags opcionais
-            for key in (junctions_key, hull_key):
-                if key is not None:
-                    params[key] = False
-            for key in (start_gs_key, end_gs_key, zonefiles_key, odfile_key,
-                        disable_key, oneway_key, intermediates_key, advanced_key):
-                if key is not None:
-                    params[key] = ""
-
-            # --- 6) Executa via Processing (provider sDNA) ---
-            fb = ProcessingFeedback(self._log, prefix=f"sDNA[{dw_field}]")
-            self._log(
-                f"sDNA: chamando provider '{alg_id}' para DW='{dw_field}'\n"
-                f"   INPUT = {in_shp}\n"
-                f"   OUTPUT = {out_shp}",
+                f"sDNA: executando comando para DW='{dw_field}':\n{' '.join(cmd)}",
                 Qgis.Info, True
             )
 
-            result = pr.run(alg_id, params, feedback=fb)
-            self._log(f"sDNA[{dw_field}] resultado bruto: {result!r}", Qgis.Info)
+            # --- 6) Executa e aguarda ---
+            # CREATE_NO_WINDOW é para não piscar uma janela de console no Windows
+            kwargs = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": True
+            }
+            if os.name == 'nt':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(cmd, **kwargs)
+            stdout, stderr = proc.communicate()
 
-            # --- 7) Tenta descobrir o que veio em 'OUTPUT' ---
-            out_obj = None
-            for key_try in ("OUTPUT", "output", output_param_key, output_key):
-                if key_try and key_try in result and result[key_try]:
-                    out_obj = result[key_try]
-                    break
+            if proc.returncode != 0:
+                self._log(f"sDNA stdout: {stdout}", Qgis.Info)
+                self._log(f"sDNA stderr: {stderr}", Qgis.Critical)
+                raise RuntimeError(f"Falha ao executar sdnaintegral (código {proc.returncode}). Verifique o log.")
 
-            out_name = f"{base_line_layer.name()}_sDNA_{dw_field}"
-            out_path = None
+            self._log(f"sDNA stdout: {stdout}", Qgis.Info)
+            if stderr:
+                self._log(f"sDNA stderr: {stderr}", Qgis.Warning)
 
-            # Caso 1: já veio um QgsVectorLayer
-            if isinstance(out_obj, QgsVectorLayer):
-                out_lyr = out_obj
-                out_lyr.setName(out_name)
-                if not out_lyr.isValid():
-                    raise RuntimeError("Camada retornada pelo provider sDNA está inválida.")
-                return out_lyr
-
-            # Caso 2: veio string (caminho)
-            if isinstance(out_obj, str):
-                out_path = out_obj.strip()
-                self._log(f"sDNA[{dw_field}] OUTPUT (string) = '{out_path}'", Qgis.Info)
-                if not out_path:
-                    raise RuntimeError("Provider sDNA retornou OUTPUT vazio (string vazia).")
-
-            # Caso 3: objeto estranho (ex.: ShapefileParameterVectorDestination)
-            if out_obj is not None and out_path is None:
-                self._log(
-                    f"sDNA[{dw_field}] OUTPUT em objeto '{type(out_obj).__name__}': {out_obj!r}",
-                    Qgis.Info, True
-                )
-                for attr in ("destination", "sink", "path", "filePath"):
-                    try:
-                        v = getattr(out_obj, attr, None)
-                    except Exception:
-                        v = None
-                    if isinstance(v, str) and v.strip():
-                        out_path = v.strip()
-                        break
-
-                if out_path:
-                    self._log(f"sDNA[{dw_field}] OUTPUT (via atributo) = '{out_path}'", Qgis.Info)
-
-            # Fallback: usa caminho explícito
-            if (not out_path) and os.path.exists(out_shp):
-                out_path = out_shp
-                self._log(f"sDNA[{dw_field}] OUTPUT: usando caminho forçado '{out_path}'", Qgis.Info)
-
-            if not out_path:
-                raise RuntimeError("Provider sDNA terminou sem retornar OUTPUT utilizável.")
-
-            out_lyr = QgsVectorLayer(out_path, out_name, "ogr")
+            # --- 7) Carrega a camada de saída ---
+            out_lyr = QgsVectorLayer(out_shp, f"{base_line_layer.name()}_sDNA_{dw_field}", "ogr")
             if not out_lyr or not out_lyr.isValid():
                 raise RuntimeError(
-                    f"Arquivo gerado pelo provider sDNA está inválido ao carregar: '{out_path}'."
+                    f"Arquivo gerado pelo sdnaintegral está inválido ao carregar: '{out_shp}'."
                 )
             return out_lyr
 
@@ -1195,7 +932,7 @@ class Chasm:
 
             # 2b — JOIN MAD (equals -> fallback intersects)
             try:
-                joined = pr.run("native:joinattributesbylocation", {
+                joined = processing.run("native:joinattributesbylocation", {
                     "INPUT": current,
                     "JOIN": out_lyr,
                     "PREDICATE": [5],  # equals
@@ -1206,7 +943,7 @@ class Chasm:
                     "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
             except Exception:
-                joined = pr.run("native:joinattributesbylocation", {
+                joined = processing.run("native:joinattributesbylocation", {
                     "INPUT": current,
                     "JOIN": out_lyr,
                     "PREDICATE": [0],  # intersects
@@ -1222,7 +959,7 @@ class Chasm:
                 f"mad_{dw}".replace(" ", "_").lower()[:30]
             )
 
-            with_new = pr.run("native:fieldcalculator", {
+            with_new = processing.run("native:fieldcalculator", {
                 "INPUT": joined,
                 "FIELD_NAME": target_name,
                 "FIELD_TYPE": 0,
@@ -1231,7 +968,7 @@ class Chasm:
                 "FORMULA": f"\"{mad_field}\"",
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
-            cleaned = pr.run("native:deletecolumn", {
+            cleaned = processing.run("native:deletecolumn", {
                 "INPUT": with_new,
                 "COLUMN": [mad_field],
                 "OUTPUT": "TEMPORARY_OUTPUT"
@@ -1252,6 +989,12 @@ class Chasm:
     # ------------------------------ RUN: abre diálogo e liga sinais ------------------------------
     def run(self):
         self._log("run(): abrindo diálogo...", Qgis.Info)
+
+        # --- NOVA LÓGICA: Verificar dependências ANTES de abrir o diálogo ---
+        dependencies_ok = self._check_and_install_sdna()
+        if not dependencies_ok:
+            return # Não abre o diálogo se as dependências não estiverem prontas
+
         if self.dlg is None:
             try:
                 from .chasm_calculator_dialog import ChasmDialog

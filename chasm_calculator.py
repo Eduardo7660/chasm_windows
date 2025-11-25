@@ -141,43 +141,6 @@ class Chasm:
                 return c
         return names[0] if names else None
 
-    def _find_sdna_script_path(self):
-        """
-        Procura o script sdnaintegral.py em locais comuns no Windows.
-        Retorna o caminho completo se encontrado, senão None.
-        """
-        import os
-        script_name = "sdnaintegral.py"
-        # Locais comuns de instalação do sDNA no Windows
-        search_paths = [
-            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "sDNA", "bin"),
-            os.path.join(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"), "sDNA", "bin"),
-        ]
-
-        for path in search_paths:
-            full_path = os.path.join(path, script_name)
-            if os.path.exists(full_path):
-                self._log(f"sDNA: script encontrado em '{full_path}'", Qgis.Info)
-                return full_path
-        return None
-
-    def _find_sdna_python_exe(self, snda_script_path):
-        """
-        Tenta encontrar um executável python.exe na mesma pasta ou em pastas-pai
-        do script sdnaintegral.py. Isso ajuda a garantir que a versão correta
-        do Python (32/64 bit) seja usada.
-        """
-        import os
-        if not snda_script_path:
-            return "python" # Fallback para o python do sistema
-
-        script_dir = os.path.dirname(snda_script_path)
-        # Procura em '.../sDNA/bin/' e em '.../sDNA/'
-        for path_to_check in [script_dir, os.path.dirname(script_dir)]:
-            py_exe = os.path.join(path_to_check, "python.exe")
-            if os.path.exists(py_exe):
-                return py_exe
-        return "python" # Fallback se não encontrar
     # ------------------------------ GUI ------------------------------
     def add_action(self, icon_path, text, callback, enabled_flag=True,
                    add_to_menu=True, add_to_toolbar=True, status_tip=None,
@@ -315,6 +278,36 @@ class Chasm:
                         out_field_name="cod_setor",
                         poly_group_interest_field="grupo_interesse",
                         poly_group_others_field="grupo_outros"):
+        
+        def clean_filename(name: str) -> str:
+            """
+            Remove caracteres inválidos e converte tudo para um formato seguro de SHP.
+            - Remove acentos
+            - Remove caracteres especiais
+            - Converte tudo para _
+            - Remove múltiplos __
+            - Garante tamanho <= 60 (limite seguro para o driver SHP)
+            """
+            import unicodedata, re
+
+            # remover acentos
+            nfkd = unicodedata.normalize("NFKD", name)
+            name = "".join([c for c in nfkd if not unicodedata.combining(c)])
+
+            # trocar tudo que não é letra/número por _
+            name = re.sub(r"[^A-Za-z0-9]+", "_", name)
+
+            # remover múltiplos __
+            name = re.sub(r"_+", "_", name)
+
+            # remover _ no início/fim
+            name = name.strip("_")
+
+            # manter tamanho seguro
+            if len(name) > 60:
+                name = name[:60]
+
+            return name
         self._log("Etapa 1: iniciando fragmentação...", Qgis.Info, True)
         import processing
 
@@ -508,22 +501,86 @@ class Chasm:
         fixed_polys.commitChanges()
         self._log("Etapa 1.13: polígonos atualizados com somas.", Qgis.Info)
 
-        # Adiciona camadas ao projeto
+        # --- Deixa a camada pronta para sDNA: single-part, 2D (sem M/Z) e com geometrias corrigidas ---
+        self._log(
+            "Etapa 1.14: preparando camada resultante para sDNA "
+            "(multipart→single, drop M/Z, fix geometries)...",
+            Qgis.Info, True
+        )
+
+        import processing as pr, os, uuid
+
+        # 1) multipart → singlepart
+        lyr_proc = pr.run("native:multiparttosingleparts", {
+            "INPUT": with_concat,
+            "OUTPUT": "TEMPORARY_OUTPUT"
+        })["OUTPUT"]
+
+        # 2) remover M/Z (fica só 2D)
+        lyr_proc = pr.run("native:dropmzvalues", {
+            "INPUT": lyr_proc,
+            "DROP_M_VALUES": True,
+            "DROP_Z_VALUES": True,
+            "OUTPUT": "TEMPORARY_OUTPUT"
+        })["OUTPUT"]
+
+        # 3) fix geometries
+        lyr_proc = pr.run("native:fixgeometries", {
+            "INPUT": lyr_proc,
+            "OUTPUT": "TEMPORARY_OUTPUT"
+        })["OUTPUT"]
+
+        # agora essa é a camada “oficial” da Etapa 1
+        with_concat = lyr_proc
         with_concat.setCrs(fixed_lines.crs())
-        with_concat.setName(f"{line_layer.name()}_fragmented_by_{poly_layer.name()}")
-        QgsProject.instance().addMapLayer(with_concat)
-        self._log(f"Etapa 1.14: camada adicionada: {with_concat.name()}", Qgis.Success, True)
 
-        # Reflete polígonos corrigidos (opcional)
-        try:
-            poly_name = poly_layer.name()
-            QgsProject.instance().removeMapLayer(poly_layer.id())
-            fixed_polys.setName(poly_name)
-            QgsProject.instance().addMapLayer(fixed_polys)
-        except Exception:
-            pass
+        # --- Salvar em disco como SHP em C:\chasm ---
+        base_dir = r"C:\chasm"
+        if not os.path.exists(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
 
-        return with_concat
+        uid = uuid.uuid4().hex[:6]
+        out_shp_path = os.path.join(
+            base_dir,
+            f"{line_layer.name()}_fragmented_by_{poly_layer.name()}_{uid}.shp"
+        )
+
+        self._log(
+            f"Etapa 1.15: salvando camada final (pronta para sDNA) em '{out_shp_path}'",
+            Qgis.Info, True
+        )
+
+        pr.run("native:savefeatures", {
+            "INPUT": with_concat,
+            "OUTPUT": out_shp_path
+        })
+
+        # Carregar do disco
+        raw_name = f"{line_layer.name()}_fragmented_by_{poly_layer.name()}"
+        safe_name = clean_filename(raw_name)
+
+        # Caminho final do SHP
+        out_shp = f"C:\\chasm\\{safe_name}.shp"
+
+        self._log(f"Etapa 1.16: salvando camada final como SHP limpo: {out_shp}", Qgis.Info)
+
+        # Exportar o SHP final
+        pr.run("native:savefeatures", {
+            "INPUT": with_concat,
+            "OUTPUT": out_shp
+        })
+
+        # Carregar camada SHP salva
+        final_layer = QgsVectorLayer(out_shp, safe_name, "ogr")
+
+        if not final_layer.isValid():
+            raise RuntimeError("Falha ao carregar SHP limpo salvo para sDNA.")
+
+        QgsProject.instance().addMapLayer(final_layer)
+
+        self._log(f"Etapa 1.17: SHP salvo e carregado: {safe_name}", Qgis.Success, True)
+
+        return final_layer
 
     def _resolve_sdna_param_keys(self, alg_id):
         """
@@ -722,57 +779,12 @@ class Chasm:
         except Exception as e:
             self._log(f"Introspec falhou: {e}", Qgis.Warning, True)
 
-    # --- helper: remover arquivos de um SHP base ---
-    def _cleanup_shp_bundle(self, path_no_ext: str):
-        import os
-        for ext in (".shp", ".shx", ".dbf", ".prj", ".cpg", ".qmd", ".qpj", ".fix", ".sbn", ".sbx"):
-            try:
-                p = path_no_ext + ext
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
-
-    # --- helper: espera o SHP ficar completo e estável ---
-    def _wait_for_complete_shp(self, base_no_ext, timeout_s=120, interval_s=1.0):
-        """
-        Espera, de forma bem simples, o .shp parar de crescer.
-        Mais tolerante (especialmente no Windows).
-        """
-        import os, time
-
-        shp_path = base_no_ext + ".shp"
-
-        t0 = time.time()
-        last_size = -1
-        stable_ticks = 0
-
-        while time.time() - t0 < timeout_s:
-            if os.path.exists(shp_path):
-                try:
-                    size = os.path.getsize(shp_path)
-                except Exception:
-                    size = -1
-
-                if size > 0 and size == last_size:
-                    stable_ticks += 1
-                    # duas leituras seguidas iguais -> consideramos “ok”
-                    if stable_ticks >= 2:
-                        return True
-                else:
-                    last_size = size
-                    stable_ticks = 0
-            time.sleep(interval_s)
-
-        # se saímos por timeout, ainda devolve True se o .shp existir
-        return os.path.exists(shp_path)
-
-    # ------------------------------ Runner sDNA + JOIN MAD (2a + 2b) ------------------------------
     # ------------------------------ Runner sDNA + JOIN MAD (2a + 2b) ------------------------------
     def _sdna_integral_and_join_mad(self, base_line_layer, sdna_ui_params=None):
         """
         Executa sDNA Integral + JOIN do campo MAD resultante de cada DW.
-        Exporta sempre para SHP físico, aguarda escrita estabilizar e usa nomes curtos.
+        Exporta sempre para SHP físico de entrada (C:\chasm), aguarda escrita estabilizar
+        e deixa o provider do sDNA decidir o caminho de saída (TEMPORARY_OUTPUT).
         """
         import os, uuid, time, re, tempfile, shutil, subprocess
         import processing as pr
@@ -834,10 +846,10 @@ class Chasm:
         advanced_key     = keys.get("advanced_key")
 
         # Sanidade mínima
-        if not input_key or not destw_key or not output_key:
+        if not input_key or not destw_key:
             raise RuntimeError(
                 "Não foi possível mapear parâmetros essenciais do sDNA "
-                f"(INPUT='{input_key}', DESTW='{destw_key}', OUTPUT='{output_key}')."
+                f"(INPUT='{input_key}', DESTW='{destw_key}')."
             )
         if not analmet_key:
             raise RuntimeError("Parâmetro de métrica 'analmet' não encontrado nesta build do sDNA.")
@@ -851,8 +863,6 @@ class Chasm:
         weighting_val_raw  = None
         origin_weight_val  = None
         custom_metric_field= None
-
-        dest_weights = ['g_in_exist', 'g_ou_exist', 'g_int_ns', 'g_ou_ns']
 
         if isinstance(sdna_ui_params, dict):
             metric_val_str  = (sdna_ui_params.get("metric") or "ANGULAR").strip().upper()
@@ -872,7 +882,9 @@ class Chasm:
 
             dw_list = [d for d in (sdna_ui_params.get("dest_weights") or []) if isinstance(d, str) and d.strip()]
             if len(dw_list) >= 1:
-                dest_weights = (dw_list + ['','','',''])[:4]
+                dest_weights = (dw_list + ["", "", "", ""])[:4]
+            else:
+                dest_weights = ["g_in_exist", "g_ou_exist", "g_int_ns", "g_ou_ns"]
 
         # Helpers de enum → índice
         def enum_index(value_str, options, default_idx=None):
@@ -913,10 +925,10 @@ class Chasm:
 
         # Nomes finais para MAD no layer de saída
         dst_map = {
-            (dest_weights[0] or 'g_in_exist'): 'mad_int_exist',
-            (dest_weights[1] or 'g_ou_exist'): 'mad_out_exist',
-            (dest_weights[2] or 'g_int_ns')  : 'mad_int_ns',
-            (dest_weights[3] or 'g_ou_ns')   : 'mad_out_ns'
+            (dest_weights[0] or "g_in_exist"): "mad_int_exist",
+            (dest_weights[1] or "g_ou_exist"): "mad_out_exist",
+            (dest_weights[2] or "g_int_ns")  : "mad_int_ns",
+            (dest_weights[3] or "g_ou_ns")   : "mad_out_ns"
         }
         run_order = [dw for dw in dest_weights if dw]
 
@@ -930,16 +942,24 @@ class Chasm:
         current = base_line_layer
         results_info = []
 
-        # sanitizador de basename curto
-        def _sanitize_basename(name: str, maxlen: int = 24) -> str:
-            base = re.sub(r'[^A-Za-z0-9_]+', '_', name or 'layer')
-            base = base.strip('_') or 'layer'
-            return base[:maxlen] or 'layer'
-
         def _run_sdna_once(dw_field: str):
-            # Sanity
+            """
+            Roda o sDNA Integral via *Processing Provider* (sDNA Provider:Integral Analysis).
+            Cria INPUT em C:\\chasm, e deixa o provider criar a saída (TEMPORARY_OUTPUT).
+            """
+            import os, uuid, re
+            import processing as pr
+            from qgis.core import QgsVectorLayer, QgsProcessingFeedback
+
+            # --- 0) Garantir que C:\chasm existe ---
+            base_dir = r"C:\chasm"
+            if not os.path.exists(base_dir):
+                os.makedirs(base_dir, exist_ok=True)
+
+            # --- 1) Sanidade da camada e do campo DW ---
             if current is None or not hasattr(current, "isValid") or not current.isValid():
                 raise RuntimeError("Camada de entrada para sDNA está inválida ou None.")
+
             field_names = [f.name() for f in current.fields()]
             if dw_field not in field_names:
                 preview = ", ".join(field_names[:10]) + ("…" if len(field_names) > 10 else "")
@@ -948,297 +968,209 @@ class Chasm:
                     f"Campos disponíveis: {preview}"
                 )
 
-            # --- Define pasta de saída em C:\ e a cria se não existir ---
-            output_folder = r"C:\chasm_calculator_output"
-            os.makedirs(output_folder, exist_ok=True)
-            tmp_dir = output_folder
-
-            # --- Prepara a camada de entrada para o sDNA ---
-            # Nome do campo de peso, garantindo que seja seguro para Shapefile (<= 10 chars)
-            safe_dw = re.sub(r'[^A-Za-z0-9_]+', '_', dw_field)[:10] or "DW"
-
-            # --- Limpeza de Geometria: Garante que não há multiparts ---
-            self._log("sDNA Prep (0/3): convertendo para single-part geometries", Qgis.Info)
+            # --- 2) Single-part + fix geometries ---
+            self._log("sDNA Prep: convertendo para single-part + fix geometries", Qgis.Info)
             mem_singlepart = pr.run("native:multiparttosingleparts", {
-                'INPUT': current,
-                'OUTPUT': 'TEMPORARY_OUTPUT'
-            })['OUTPUT']
+                "INPUT": current,
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
 
-            self._log("sDNA Prep (0/3): corrigindo geometrias", Qgis.Info)
             mem_clean = pr.run("native:fixgeometries", {
-                'INPUT': mem_singlepart,
-                'OUTPUT': 'TEMPORARY_OUTPUT'
-            })['OUTPUT']
+                "INPUT": mem_singlepart,
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
 
+            # --- 3) Criar SHP de entrada em disco (2 passos: DW seguro + PolyLineId) ---
+            uid = uuid.uuid4().hex[:6]
 
-            # --- Abordagem robusta: cria o SHP de entrada em dois passos, com arquivos distintos ---
-            in_shp_base_1 = f"in_{uuid.uuid4().hex[:6]}"
-            in_shp_1 = os.path.join(tmp_dir, f"{in_shp_base_1}.shp")
-            in_shp_base_2 = f"in_{uuid.uuid4().hex[:6]}_final"
-            in_shp_2 = os.path.join(tmp_dir, f"{in_shp_base_2}.shp")
+            in_shp_1 = os.path.join(base_dir, f"in_{dw_field}_{uid}.shp")
+            in_shp_2 = os.path.join(base_dir, f"in_{dw_field}_{uid}_final.shp")
 
-            self._log(f"sDNA Prep: limpando resíduos de '{in_shp_1}' e '{in_shp_2}' antes de criar.", Qgis.Info)
-            self._cleanup_shp_bundle(in_shp_1[:-4])
-            self._cleanup_shp_bundle(in_shp_2[:-4])
+            # nome de campo de peso seguro (<=10 chars, só letras/números/_)
+            safe_dw = re.sub(r"[^A-Za-z0-9_]+", "_", dw_field)[:10] or "DW"
 
-            # Passo 1: Cria SHP com o campo de peso
-            self._log(f"sDNA Prep (1/3): criando SHP com campo de peso '{safe_dw}'", Qgis.Info)
-            result1 = pr.run("native:fieldcalculator", {
-                'INPUT': mem_clean, # Usa a camada limpa
-                'FIELD_NAME': safe_dw,
-                'FIELD_TYPE': 0,  # Float
-                'FIELD_LENGTH': 20, 'FIELD_PRECISION': 10,
-                'FORMULA': f'"{dw_field}"',
-                'OUTPUT': in_shp_1  # Salva o primeiro SHP
+            self._log(f"sDNA Prep (1/3): criando SHP com campo de peso '{safe_dw}' em '{in_shp_1}'", Qgis.Info)
+            res1 = pr.run("native:fieldcalculator", {
+                "INPUT": mem_clean,
+                "FIELD_NAME": safe_dw,
+                "FIELD_TYPE": 0,  # Float
+                "FIELD_LENGTH": 20,
+                "FIELD_PRECISION": 10,
+                "FORMULA": f"coalesce(\"{dw_field}\", 0)",
+                "OUTPUT": in_shp_1
             })
 
-            # Passo 2: Adiciona PolyLineId ao SHP recém-criado
-            self._log("sDNA Prep (2/3): adicionando 'PolyLineId' ao SHP", Qgis.Info)
-            result2 = pr.run("native:fieldcalculator", {
-                'INPUT': result1['OUTPUT'], # Usa o SHP do passo anterior como entrada
-                'FIELD_NAME': 'PolyLineId',
-                'FIELD_TYPE': 1,  # Integer
-                'FIELD_LENGTH': 10,
-                'FORMULA': '@row_number',
-                'OUTPUT': in_shp_2 # Salva no SHP final
+            if not os.path.exists(in_shp_1):
+                try:
+                    listing = ", ".join(os.listdir(base_dir))
+                except Exception:
+                    listing = "NÃO FOI POSSÍVEL LISTAR"
+                raise RuntimeError(
+                    f"Falha ao criar SHP de entrada (passo 1): {in_shp_1}. "
+                    f"Arquivos em C:\\chasm: {listing}"
+                )
+
+            self._log(f"sDNA Prep (2/3): adicionando PolyLineId em '{in_shp_2}'", Qgis.Info)
+            res2 = pr.run("native:fieldcalculator", {
+                "INPUT": res1["OUTPUT"],
+                "FIELD_NAME": "PolyLineId",
+                "FIELD_TYPE": 1,  # Integer
+                "FIELD_LENGTH": 10,
+                "FIELD_PRECISION": 0,
+                "FORMULA": "@row_number",
+                "OUTPUT": in_shp_2
             })
 
-            # 8) Verifica se o SHP foi criado
-            if not os.path.exists(in_shp_2) or os.path.getsize(in_shp_2) == 0:
-                raise RuntimeError(f"SHP de INPUT para o sDNA não foi criado ou está vazio: {in_shp_2}")
+            in_shp = in_shp_2
+            if not os.path.exists(in_shp):
+                try:
+                    listing = ", ".join(os.listdir(base_dir))
+                except Exception:
+                    listing = "NÃO FOI POSSÍVEL LISTAR"
+                raise RuntimeError(
+                    f"Falha ao criar SHP de entrada (passo 2/final): {in_shp}. "
+                    f"Arquivos em C:\\chasm: {listing}"
+                )
 
-            # >>> IMPORTANTÍSSIMO: passe a usar o nome seguro
-            dw_field = safe_dw
+            self._log(f"sDNA: INPUT final para provider = '{in_shp}'", Qgis.Info)
 
-            # --- definir OUTPUT como SHP de nome curto ---
-            shp_base = f"sdna_{uuid.uuid4().hex[:6]}"
-            out_shp  = os.path.join(tmp_dir, f"{shp_base}.shp")
-            base_no_ext = out_shp[:-4]
-            self._cleanup_shp_bundle(base_no_ext)  # limpa resíduos
+            # --- 4) Prepara parâmetro de saída (caminho explícito em disco) ---
+            output_param_key = output_key or "OUTPUT"
+            if alg is not None:
+                try:
+                    param_names = [p.name() for p in alg.parameterDefinitions()]
+                except Exception:
+                    param_names = []
+                # garante que o nome bate com o algoritmo
+                if output_param_key not in param_names:
+                    if "OUTPUT" in param_names:
+                        output_param_key = "OUTPUT"
+                    elif "output" in param_names:
+                        output_param_key = "output"
 
-            # ---- Monta parâmetros para pr.run ----
+            out_shp = os.path.join(base_dir, f"out_{dw_field}_{uid}.shp")
+
+            self._log(
+                f"sDNA: usando parâmetro de saída '{output_param_key}' -> '{out_shp}'.",
+                Qgis.Info
+            )
+
+            # --- 5) Monta parâmetros pro provider sDNA ---
             params = {
-                input_key:   in_shp_2,
-                destw_key:   dw_field,
-                output_key:  out_shp,
+                input_key:        in_shp,          # caminho do SHP
+                destw_key:        safe_dw,         # campo DW seguro
+                output_param_key: out_shp,         # caminho explícito da saída
             }
 
-            # Adiciona os parâmetros booleanos e de enum, pois o provider do sDNA espera as chaves
-            if analmet_key:         params[analmet_key] = analmet_idx
-            if radii_key:           params[radii_key] = radii_str
-            if bandedradii_key:     params[bandedradii_key] = banded_val
-            if cont_key:            params[cont_key] = cont_val
-            if bet_key:             params[bet_key] = bet_val
-            if bet_bi_key:          params[bet_bi_key] = bet_bi_val if bet_val else False
-            if weighting_key and weighting_val is not None:
+            # Métrica / raios / modo
+            if analmet_key is not None:
+                params[analmet_key] = analmet_idx
+            if radii_key is not None:
+                params[radii_key] = radii_str
+            if bandedradii_key is not None:
+                params[bandedradii_key] = banded_val
+            if cont_key is not None:
+                params[cont_key] = cont_val
+
+            # Betweenness / bidir
+            if bet_key is not None:
+                params[bet_key] = bet_val
+            if bet_bi_key is not None:
+                params[bet_bi_key] = bet_bi_val if bet_val else False
+
+            # Weighting
+            if weighting_key is not None and weighting_val is not None:
                 params[weighting_key] = weighting_val
 
-
-            # opcionais (strings/flags vazios seguros)
-            if origweight_key:      params[origweight_key] = origin_weight_val or ""
-            if custommetric_key:    params[custommetric_key] = (
-                custom_metric_field if (metric_val_str == "CUSTOM" and custom_metric_field) else ""
-            )
-            if radmet_key:
-                params[radmet_key] = defaults_map.get(radmet_key, 0)
-            if junctions_key:       params[junctions_key] = False
-            if hull_key:            params[hull_key] = False
-            if start_gs_key:        params[start_gs_key] = ""
-            if end_gs_key:          params[end_gs_key] = ""
-            if zonefiles_key:       params[zonefiles_key] = ""
-            if odfile_key:          params[odfile_key] = ""
-            if disable_key:         params[disable_key] = ""
-            if oneway_key:          params[oneway_key] = ""
-            if intermediates_key:   params[intermediates_key] = ""
-            if advanced_key:        params[advanced_key] = ""
-
-            # --- Monta a string de configuração avançada (formato "key=value;key2=value2") ---
-            config_parts = []
-            # Métrica
-            config_parts.append(f"destweight={dw_field}")
-            # Métrica
-            analmet_str = (analmet_options[analmet_idx] if analmet_options and analmet_idx < len(analmet_options) else "ANGULAR")
-            config_parts.append(f"metric={analmet_str}")
-            # Raios
-            config_parts.append(f"radii={radii_str}")
-            if cont_val:
-                config_parts.append("continuous")
-            # Betweenness
-            if bet_val:
-                config_parts.append("betweenness=true")
-                if bet_bi_val:
-                    config_parts.append("bidir=true")
-            # Weighting - A versão do sDNA do usuário não reconhece este parâmetro na config string.
-            # O default é 'link', que é o que queremos, então simplesmente o omitimos.
-            # if weighting_val is not None:
-            #     # Converte índice de volta para string
-            #     w_str = (weighting_options[weighting_val] if weighting_options and weighting_val < len(weighting_options) else "link")
-            #     config_parts.append(f"weighting={w_str}")
-
-            config_string = ";".join(config_parts)
-
-            if advanced_key:
-                params[advanced_key] = config_string
-            else:
-                # Fallback se a chave 'advanced' não for encontrada
-                self._log("Chave de parâmetro 'advanced' não encontrada, passando config no final.", Qgis.Warning)
-                # Esta parte é mais complexa e dependeria de como o provider lida com args extras.
-                # Por agora, vamos confiar que 'advanced' existe.
-                raise RuntimeError("sDNA provider não parece suportar o parâmetro 'advanced'.")
-
-            def _v(v):
-                # Simplificado para logging mais limpo
-                if isinstance(v, QgsVectorLayer): return f"<layer:{v.name()}>"
-                return str(v)
-
-            # --- Monta e loga o comando para o terminal ---
-            try:
-                sdna_script_path = self._find_sdna_script_path()
-                if not sdna_script_path:
-                    raise RuntimeError(
-                        "Não foi possível encontrar 'sdnaintegral.py'. "
-                        "Verifique se o sDNA está instalado em 'C:\\Program Files\\sDNA' ou "
-                        "'C:\\Program Files (x86)\\sDNA'."
-                    )
-
-                python_exe = self._find_sdna_python_exe(sdna_script_path)
-
-                # Comando para subprocess.run (lista de argumentos)
-                # NOTA: O primeiro argumento 'python' é separado do caminho do script.
-                # Isso é mais robusto que uma string única, especialmente com espaços em "Program Files".
-                cmd_list = [
-                    python_exe,
-                    sdna_script_path,
-                    "-i", in_shp_2,
-                    "-o", out_shp,
-                    config_string
-                ]
-                # Comando para logging (string única, mais legível para o usuário)
-                cmd_parts = [
-                    f'"{python_exe}" "{sdna_script_path}"',
-                    f"-i \"{in_shp_2}\"",
-                    f"-o \"{out_shp}\"",
-                    f"\"{config_string}\"" # Aspas para garantir que a string de config seja um único argumento
-                ]
-                self._log("\n\n--- Comando sDNA para Terminal ---\n" + " ".join(cmd_parts) + "\n----------------------------------\n\n", Qgis.Info, to_bar=True, duration=15)
-            except Exception as e:
-                self._log(f"Falha ao gerar log de comando para terminal: {e}", Qgis.Warning)
-
-            try:
-                self._log("sDNA: Invocando sdnaintegral.py diretamente via subprocess...", Qgis.Info)
-                # Executa o comando e captura stdout/stderr.
-                # `capture_output=True` pega stdout/stderr. `text=True` decodifica como texto.
-                # `timeout` evita que o processo trave o QGIS indefinidamente.
-                proc = subprocess.run(cmd_list, capture_output=True, text=True, timeout=600, check=False)
-
-                # Loga as saídas, independentemente do resultado
-                self._log(f"sDNA: Processo concluído com código de saída: {proc.returncode}", Qgis.Info)
-                self._log(f"--- sDNA STDOUT ---\n{proc.stdout or '(vazio)'}\n-------------------", Qgis.Info)
-                if proc.stderr:
-                    self._log(f"--- sDNA STDERR ---\n{proc.stderr}\n-------------------", Qgis.Warning)
-
-                # Se o código de saída for diferente de 0, houve um erro.
-                if proc.returncode != 0:
-                    raise RuntimeError(f"O script sdnaintegral.py falhou com código {proc.returncode}. Verifique o STDERR no log.")
-            except Exception as e:
-                self._log(f"sDNA: A execução direta via subprocess falhou com uma exceção: {e}", Qgis.Critical)
-                # Re-levanta a exceção para parar o pipeline
-                raise RuntimeError(f"Falha ao executar sdnaintegral.py: {e}") from e
-
-            self._log(f"sDNA: Verificando se o arquivo de saída '{out_shp}' foi criado...", Qgis.Info)
-
-            # espera o SHP completo e estável (até 240s)
-            # espera o SHP completo e estável (até 240s) - mas não mata se falhar
-            if not self._wait_for_complete_shp(base_no_ext, timeout_s=240):
-                possible_csv = base_no_ext + ".csv"
-                if os.path.exists(possible_csv):
-                    self._log(
-                        "sDNA gerou CSV em vez de SHP (provável INPUT sem PolyLineId ou incompatibilidade de driver).",
-                        Qgis.Warning, True
-                    )
-                else:
-                    self._log(
-                        "Aviso: SHP de saída do sDNA não foi considerado totalmente estável, "
-                        "mas vou tentar carregar assim mesmo.",
-                        Qgis.Warning, True
-                    )
-                # não damos raise aqui — deixa o restante do código tentar carregar o layer
-
-            # sanity: sidecars existem e têm tamanho razoável?
-            side_ok, size_ok = False, False
-            if os.path.exists(out_shp):
-                try:
-                    side_ok = all(os.path.exists(base_no_ext + ext) for ext in (".shp", ".shx", ".dbf"))
-                    size_ok = side_ok and all(os.path.getsize(base_no_ext + ext) > 100 for ext in (".shp", ".shx", ".dbf"))
-                except Exception: pass
-            # 1) tentativa direta
-            out_name = f"{base_line_layer.name()}_sDNA_{dw_field}"
-            out_lyr = None
-            if side_ok and size_ok:
-                out_lyr = QgsVectorLayer(out_shp, out_name, "ogr")
-                if not out_lyr or not out_lyr.isValid():
-                    # dá mais uma chance (latência de FS)
-                    time.sleep(0.5)
-                    out_lyr = QgsVectorLayer(out_shp, out_name, "ogr")
-
-            # 2) checar se o algoritmo gdal:vectortranslate existe no Processing
-            reg = QgsApplication.processingRegistry()
-            if reg.algorithmById("gdal:vectortranslate") is None:
-                # se não existir, só avisa e pula TODOS os fallbacks que usam GDAL
-                self._log(
-                    "GDAL / gdal:vectortranslate não encontrado no Processing; "
-                    "não vou rodar os fallbacks. "
-                    f"O sDNA gerou o arquivo:\n{out_shp}",
-                    Qgis.Warning
+            # Pesos de origem / métrica custom
+            if origweight_key is not None:
+                params[origweight_key] = origin_weight_val or ""
+            if custommetric_key is not None:
+                params[custommetric_key] = (
+                    custom_metric_field if (metric_val_str == "CUSTOM" and custom_metric_field) else ""
                 )
-            else:
-                # 2a) fallback: converter para GPKG com GDAL e carregar
-                if not out_lyr or not out_lyr.isValid():
+
+            # Radial metric
+            if radmet_key is not None:
+                params[radmet_key] = defaults_map.get(radmet_key, 0)
+
+            # Flags opcionais
+            for key in (junctions_key, hull_key):
+                if key is not None:
+                    params[key] = False
+            for key in (start_gs_key, end_gs_key, zonefiles_key, odfile_key,
+                        disable_key, oneway_key, intermediates_key, advanced_key):
+                if key is not None:
+                    params[key] = ""
+
+            # --- 6) Executa via Processing (provider sDNA) ---
+            fb = ProcessingFeedback(self._log, prefix=f"sDNA[{dw_field}]")
+            self._log(
+                f"sDNA: chamando provider '{alg_id}' para DW='{dw_field}'\n"
+                f"   INPUT = {in_shp}\n"
+                f"   OUTPUT = {out_shp}",
+                Qgis.Info, True
+            )
+
+            result = pr.run(alg_id, params, feedback=fb)
+            self._log(f"sDNA[{dw_field}] resultado bruto: {result!r}", Qgis.Info)
+
+            # --- 7) Tenta descobrir o que veio em 'OUTPUT' ---
+            out_obj = None
+            for key_try in ("OUTPUT", "output", output_param_key, output_key):
+                if key_try and key_try in result and result[key_try]:
+                    out_obj = result[key_try]
+                    break
+
+            out_name = f"{base_line_layer.name()}_sDNA_{dw_field}"
+            out_path = None
+
+            # Caso 1: já veio um QgsVectorLayer
+            if isinstance(out_obj, QgsVectorLayer):
+                out_lyr = out_obj
+                out_lyr.setName(out_name)
+                if not out_lyr.isValid():
+                    raise RuntimeError("Camada retornada pelo provider sDNA está inválida.")
+                return out_lyr
+
+            # Caso 2: veio string (caminho)
+            if isinstance(out_obj, str):
+                out_path = out_obj.strip()
+                self._log(f"sDNA[{dw_field}] OUTPUT (string) = '{out_path}'", Qgis.Info)
+                if not out_path:
+                    raise RuntimeError("Provider sDNA retornou OUTPUT vazio (string vazia).")
+
+            # Caso 3: objeto estranho (ex.: ShapefileParameterVectorDestination)
+            if out_obj is not None and out_path is None:
+                self._log(
+                    f"sDNA[{dw_field}] OUTPUT em objeto '{type(out_obj).__name__}': {out_obj!r}",
+                    Qgis.Info, True
+                )
+                for attr in ("destination", "sink", "path", "filePath"):
                     try:
-                        gpkg_tmp = os.path.join(tmp_dir, f"{shp_base}.gpkg")
-                        vt = pr.run("gdal:vectortranslate", {
-                            "INPUT": out_shp,
-                            "OUTPUT": gpkg_tmp,
-                            "LAYER_NAME": "sdna",
-                            "OPTIONS": "",
-                            "GEOMETRY": "PROMOTE_TO_MULTI",
-                        })
-                        out_lyr = QgsVectorLayer(gpkg_tmp, out_name, "ogr")
-                    except Exception as e:
-                        self._log(f"Fallback GPKG falhou: {e}", Qgis.Warning)
+                        v = getattr(out_obj, attr, None)
+                    except Exception:
+                        v = None
+                    if isinstance(v, str) and v.strip():
+                        out_path = v.strip()
+                        break
 
-                # 2b) fallback alternativo: carregar em memória (TEMPORARY_OUTPUT) via vectortranslate
-                if not out_lyr or not out_lyr.isValid():
-                    try:
-                        vt_mem = pr.run("gdal:vectortranslate", {
-                            "INPUT": out_shp,
-                            "OUTPUT": "TEMPORARY_OUTPUT",
-                            "LAYER_NAME": "sdna",
-                            "GEOMETRY": "PROMOTE_TO_MULTI",
-                        })
-                        out_lyr = vt_mem["OUTPUT"] if isinstance(vt_mem, dict) else vt_mem
-                        if out_lyr and hasattr(out_lyr, "setName"):
-                            out_lyr.setName(out_name)
-                    except Exception as e:
-                        self._log(f"Fallback memória falhou: {e}", Qgis.Warning)
+                if out_path:
+                    self._log(f"sDNA[{dw_field}] OUTPUT (via atributo) = '{out_path}'", Qgis.Info)
 
+            # Fallback: usa caminho explícito
+            if (not out_path) and os.path.exists(out_shp):
+                out_path = out_shp
+                self._log(f"sDNA[{dw_field}] OUTPUT: usando caminho forçado '{out_path}'", Qgis.Info)
 
+            if not out_path:
+                raise RuntimeError("Provider sDNA terminou sem retornar OUTPUT utilizável.")
 
-            # 4) CSV detectado? Informe claramente o motivo provável
-            if (not out_lyr or not out_lyr.isValid()):
-                possible_csv = base_no_ext + ".csv"
-                if os.path.exists(possible_csv):
-                    raise RuntimeError(
-                        "sDNA gerou CSV (sem geometria). Verifique se o INPUT tem campo inteiro 'PolyLineId' "
-                        "e se o driver de saída está OK no ambiente."
-                    )
-
-            # sucesso final?
+            out_lyr = QgsVectorLayer(out_path, out_name, "ogr")
             if not out_lyr or not out_lyr.isValid():
-                raise RuntimeError(f"sDNA terminou, mas a saída não pôde ser carregada (nem com fallbacks): {out_shp}")
-
-            # adiciona e segue
-            out_lyr.setName(out_name)
+                raise RuntimeError(
+                    f"Arquivo gerado pelo provider sDNA está inválido ao carregar: '{out_path}'."
+                )
             return out_lyr
 
         # ===== Loop por DWs =====
@@ -1255,7 +1187,7 @@ class Chasm:
             # Campo MAD*
             mad_field = None
             for f in out_lyr.fields():
-                if f.name().upper().startswith('MAD'):
+                if f.name().upper().startswith("MAD"):
                     mad_field = f.name()
                     break
             if not mad_field:
@@ -1264,35 +1196,45 @@ class Chasm:
             # 2b — JOIN MAD (equals -> fallback intersects)
             try:
                 joined = pr.run("native:joinattributesbylocation", {
-                    "INPUT": current, "JOIN": out_lyr,
+                    "INPUT": current,
+                    "JOIN": out_lyr,
                     "PREDICATE": [5],  # equals
                     "JOIN_FIELDS": [mad_field],
-                    "METHOD": 0, "DISCARD_NONMATCHING": False,
-                    "PREFIX": "", "OUTPUT": "TEMPORARY_OUTPUT"
+                    "METHOD": 0,
+                    "DISCARD_NONMATCHING": False,
+                    "PREFIX": "",
+                    "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
             except Exception:
                 joined = pr.run("native:joinattributesbylocation", {
-                    "INPUT": current, "JOIN": out_lyr,
+                    "INPUT": current,
+                    "JOIN": out_lyr,
                     "PREDICATE": [0],  # intersects
                     "JOIN_FIELDS": [mad_field],
-                    "METHOD": 0, "DISCARD_NONMATCHING": False,
-                    "PREFIX": "", "OUTPUT": "TEMPORARY_OUTPUT"
+                    "METHOD": 0,
+                    "DISCARD_NONMATCHING": False,
+                    "PREFIX": "",
+                    "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
 
-            target_name = {
-                (dest_weights[0] or 'g_in_exist'): 'mad_int_exist',
-                (dest_weights[1] or 'g_ou_exist'): 'mad_out_exist',
-                (dest_weights[2] or 'g_int_ns')  : 'mad_int_ns',
-                (dest_weights[3] or 'g_ou_ns')   : 'mad_out_ns'
-            }.get(dw, f"mad_{dw}".replace(" ", "_").lower()[:30])
+            target_name = dst_map.get(
+                dw,
+                f"mad_{dw}".replace(" ", "_").lower()[:30]
+            )
 
             with_new = pr.run("native:fieldcalculator", {
-                "INPUT": joined, "FIELD_NAME": target_name,
-                "FIELD_TYPE": 0, "FIELD_LENGTH": 20, "FIELD_PRECISION": 6,
-                "FORMULA": f"\"{mad_field}\"", "OUTPUT": "TEMPORARY_OUTPUT"
+                "INPUT": joined,
+                "FIELD_NAME": target_name,
+                "FIELD_TYPE": 0,
+                "FIELD_LENGTH": 20,
+                "FIELD_PRECISION": 6,
+                "FORMULA": f"\"{mad_field}\"",
+                "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
             cleaned = pr.run("native:deletecolumn", {
-                "INPUT": with_new, "COLUMN": [mad_field], "OUTPUT": "TEMPORARY_OUTPUT"
+                "INPUT": with_new,
+                "COLUMN": [mad_field],
+                "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
 
             current = cleaned
@@ -1305,6 +1247,7 @@ class Chasm:
             self._log(f"JOIN MAD resumo: DW={dw} saída='{out_name}' {mad_src} -> {mad_dst}", Qgis.Info)
         self._log(f"Etapa 2: concluída — camada final '{current.name()}'", Qgis.Success, True)
         return current
+
 
     # ------------------------------ RUN: abre diálogo e liga sinais ------------------------------
     def run(self):

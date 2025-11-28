@@ -717,7 +717,7 @@ class Chasm:
         Executa sDNA Integral + JOIN do campo MAD resultante de cada DW.
         Exporta sempre para SHP físico, aguarda escrita estabilizar e usa nomes curtos.
         """
-        import os, uuid, time, re, tempfile, shutil
+        import os, uuid, time, re, tempfile, shutil, subprocess
         import processing as pr
         from qgis.core import (
             Qgis, QgsProject, QgsApplication, QgsVectorLayer,
@@ -727,47 +727,15 @@ class Chasm:
 
         self._log("Etapa 2: iniciando sDNA (2a) + JOIN MAD (2b)...", Qgis.Info, True)
 
-        alg_id = self._sdna_integral_alg_id or self._find_sdna_integral_alg()
-        if not alg_id:
-            raise RuntimeError("Algoritmo sDNA Integral não encontrado no Processing.")
-
-        # === Descobre chaves do algoritmo (dinâmico) ===
-        keys = self._resolve_sdna_param_keys(alg_id)
-
-        # Extrai mapeamentos
-        input_key        = keys.get("input_key")
-        output_key       = keys.get("output_key")
-        destw_key        = keys.get("destw_key")
-        bet_key          = keys.get("bet_key")
-        bet_bi_key       = keys.get("bet_bi_key")
-        junctions_key    = keys.get("junctions_key")
-        hull_key         = keys.get("hull_key")
-        start_gs_key     = keys.get("start_gs_key")
-        end_gs_key       = keys.get("end_gs_key")
-        analmet_key      = keys.get("analmet_key")
-        analmet_options  = keys.get("analmet_options")
-        radii_key        = keys.get("radii_key")
-        bandedradii_key  = keys.get("bandedradii_key")
-        cont_key         = keys.get("cont_key")
-        weighting_key    = keys.get("weighting_key")
-        weighting_options= keys.get("weighting_options")
-        origweight_key   = keys.get("origweight_key")
-        custommetric_key = keys.get("custommetric_key")
-        zonefiles_key    = keys.get("zonefiles_key")
-        odfile_key       = keys.get("odfile_key")
-        disable_key      = keys.get("disable_key")
-        oneway_key       = keys.get("oneway_key")
-        intermediates_key= keys.get("intermediates_key")
-        advanced_key     = keys.get("advanced_key")
-
-        # Sanidade mínima
-        if not input_key or not destw_key or not output_key:
+        # Binário externo do sDNA (fora do ambiente do QGIS)
+        sdna_bin = os.environ.get("CHASM_SDNA_BIN", "sdnaintegral")
+        sdna_exe = shutil.which(sdna_bin)
+        if not sdna_exe:
             raise RuntimeError(
-                "Não foi possível mapear parâmetros essenciais do sDNA "
-                f"(INPUT='{input_key}', DESTW='{destw_key}', OUTPUT='{output_key}')."
+                f"Binário sDNA '{sdna_bin}' não encontrado no PATH. "
+                "Ajuste o PATH ou defina a variável de ambiente CHASM_SDNA_BIN."
             )
-        if not analmet_key:
-            raise RuntimeError("Parâmetro de métrica 'analmet' não encontrado nesta build do sDNA.")
+        self._log(f"Etapa 2a: usando sDNA externo '{sdna_exe}'", Qgis.Info)
 
         # ---- parâmetros vindos da UI (com defaults) ----
         metric_val_str     = "ANGULAR"
@@ -801,39 +769,8 @@ class Chasm:
             if len(dw_list) >= 1:
                 dest_weights = (dw_list + ['','','',''])[:4]
 
-        # Helpers de enum → índice
-        def enum_index(value_str, options, default_idx=None):
-            if options is None or len(options) == 0:
-                return default_idx
-            v = (value_str or "").strip().upper()
-            for i, opt in enumerate(options):
-                if str(opt).strip().upper() == v:
-                    return i
-            for i, opt in enumerate(options):
-                s = str(opt).strip().upper()
-                if s.startswith(v) or v.startswith(s):
-                    return i
-            return default_idx
-
-        # analmet -> índice
-        analmet_idx = enum_index(metric_val_str, analmet_options, default_idx=0)
-        if analmet_options and metric_val_str == "CUSTOM" and not custom_metric_field:
-            self._log("sDNA: 'CUSTOM' sem campo custommetric — fallback para 'ANGULAR'.", Qgis.Warning, True)
-            analmet_idx = enum_index("ANGULAR", analmet_options, default_idx=0)
-
-        # weighting -> índice (se enum)
-        def normalize_weighting(val_raw, options):
-            if not val_raw:
-                return None
-            if options and isinstance(options, (list, tuple)):
-                return enum_index(val_raw, options, default_idx=None)
-            return val_raw
-        weighting_val = normalize_weighting(weighting_val_raw, weighting_options)
-
         # radii precisa ser string
         radii_str = str(radius_val)
-        banded_val = (radius_mode_str == "band")
-        cont_val   = (radius_mode_str == "continuous")
 
         # Nomes finais para MAD no layer de saída
         dst_map = {
@@ -845,9 +782,9 @@ class Chasm:
         run_order = [dw for dw in dest_weights if dw]
 
         self._log(
-            "Etapa 2a: mapa sDNA → "
-            f"INPUT='{input_key}', DESTW='{destw_key}', OUTPUT='{output_key}', "
-            f"ANALMET idx={analmet_idx}, RADII='{radii_key}', WEIGHTING='{weighting_key}'",
+            "Etapa 2a: parâmetros sDNA → "
+            f"metric={metric_val_str}, radii={radii_str}, modo='{radius_mode_str}', "
+            f"DW(s)={run_order}",
             Qgis.Info, True
         )
 
@@ -1020,36 +957,29 @@ class Chasm:
                 "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
 
-            # 6) renomeia o campo de destino para um nome SHP-safe (≤10 chars, ASCII)
-            safe_dw = re.sub(r'[^A-Za-z0-9_]+', '_', dw_field)[:10] or "DW"
-            mem_refact = pr.run("native:refactorfields", {
-                "INPUT": mem_ready,
-                "FIELDS_MAPPING": [{
-                    "expression": f"\"{dw_field}\"",
-                    "length": 64,
-                    "name": safe_dw,
-                    "precision": 6,
-                    "type": 10  # Double
-                }],
-                "OUTPUT": "TEMPORARY_OUTPUT"
-            })["OUTPUT"]
+            # Nome final do DW já está truncado em dw_field (≤10)
+            dw_field_cli = dw_field
 
-            # 7) salva com 'native:savefeatures' (mais tolerante que QgsVectorFileWriter)
+            # 6) salva com 'native:savefeatures' (mais tolerante que QgsVectorFileWriter)
             saved = pr.run("native:savefeatures", {
-                "INPUT": mem_refact,
+                "INPUT": mem_ready,
                 "OUTPUT": in_shp,
                 "LAYER_NAME": "",
                 "DATASOURCE_OPTIONS": "ENCODING=UTF-8",
                 "LAYER_OPTIONS": "SHPT=ARC;ENCODING=UTF-8"
             })["OUTPUT"]
 
-            # 8) espera o bundle SHP estabilizar
+            # 7) espera o bundle SHP estabilizar
             if not self._wait_for_complete_shp(in_no_ext, timeout_s=90):
                 raise RuntimeError(f"SHP de INPUT não ficou completo/estável: {in_shp}")
 
-            # >>> IMPORTANTÍSSIMO: passe a usar o nome seguro
-            dw_field = safe_dw
-
+            # Confirma o nome real do campo DW no SHP (case-insensitive)
+            try:
+                shp_check = QgsVectorLayer(in_shp, "chk", "ogr")
+                field_names_lower = {f.name().lower(): f.name() for f in shp_check.fields()}
+                dw_field = field_names_lower.get(dw_field_cli.lower(), dw_field_cli)
+            except Exception:
+                dw_field = dw_field_cli
 
             # --- definir OUTPUT como SHP de nome curto ---
             shp_base = f"sdna_{uuid.uuid4().hex[:6]}"
@@ -1057,55 +987,49 @@ class Chasm:
             base_no_ext = out_shp[:-4]
             self._cleanup_shp_bundle(base_no_ext)  # limpa resíduos
 
-            # ---- Executa sDNA
-            params = {
-                input_key:   in_shp,           # SHP físico de entrada
-                destw_key:   dw_field,
-                output_key:  out_shp,          # SHP físico (exigido pelo sDNA)
-                analmet_key: analmet_idx,
-            }
+            # ---- Executa sDNA via CLI externo (fora do Processing/QGIS)
+            opts = [
+                ("metric", metric_val_str.lower()),
+                ("radii", radii_str),
+                ("destweight", dw_field),
+            ]
+            if radius_mode_str == "continuous":
+                opts.append(("cont", "true"))
+            if bet_val:
+                opts.append(("betweenness", "true"))
+                if bet_bi_val:
+                    opts.append(("bidir", "true"))
+            if weighting_val_raw:
+                # CLI do sDNA integral não aceita "weighting"; loga e ignora
+                self._log(
+                    f"sDNA CLI: parâmetro 'weighting' não suportado; ignorando valor '{weighting_val_raw}'.",
+                    Qgis.Warning
+                )
+            if origin_weight_val:
+                opts.append(("origweight", origin_weight_val))
+            if metric_val_str == "CUSTOM" and custom_metric_field:
+                opts.append(("custommetric", custom_metric_field))
 
-            # raios e modos
-            if radii_key:                   params[radii_key] = str(radii_str)
-            if bandedradii_key is not None: params[bandedradii_key] = bool(banded_val)
-            if cont_key is not None:        params[cont_key] = bool(cont_val)
-            # betweenness
-            if bet_key is not None:         params[bet_key] = bool(bet_val)
-            if bet_bi_key is not None:      params[bet_bi_key] = bool(bet_bi_val) if bet_val else False
-            # weighting
-            if weighting_key and (weighting_val is not None):
-                params[weighting_key] = weighting_val
-            # opcionais (strings/flags vazios seguros)
-            if origweight_key:      params[origweight_key] = origin_weight_val or ""
-            if custommetric_key:    params[custommetric_key] = (custom_metric_field if (metric_val_str == "CUSTOM" and custom_metric_field) else "")
-            if junctions_key:       params[junctions_key] = False
-            if hull_key:            params[hull_key] = False
-            if start_gs_key:        params[start_gs_key] = ""
-            if end_gs_key:          params[end_gs_key] = ""
-            if zonefiles_key:       params[zonefiles_key] = ""
-            if odfile_key:          params[odfile_key] = ""
-            if disable_key:         params[disable_key] = ""
-            if oneway_key:          params[oneway_key] = ""
-            if intermediates_key:   params[intermediates_key] = ""
-            if advanced_key:        params[advanced_key] = ""
-
-            def _v(v):
-                try:
-                    if hasattr(v, "name") and callable(getattr(v, "name", None)):
-                        return f"<layer:{v.name()}>"
-                    return repr(v)
-                except Exception:
-                    return repr(v)
-            self._log(
-                "Etapa 2a: executando sDNA com → " +
-                ", ".join(f"{str(k)}={str(_v(v))}" for k, v in params.items()),
-                Qgis.Info
-            )
+            param_str = ";".join(f"{k}={v}" for k, v in opts if v not in (None, ""))
+            cmd = [sdna_exe, "-i", in_shp, "-o", out_shp, param_str]
+            self._log(f"Etapa 2a: executando CLI: {' '.join(cmd)}", Qgis.Info)
 
             try:
-                _ = pr.run(alg_id, params)
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
             except Exception as e:
-                raise RuntimeError(f"sDNA Integral falhou para DW '{dw_field}': {e}") from e
+                raise RuntimeError(f"Falha ao chamar '{sdna_exe}' para DW '{dw_field}': {e}") from e
+
+            stdout_t = (proc.stdout or "").strip()
+            stderr_t = (proc.stderr or "").strip()
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"sDNA (DW '{dw_field}') retornou código {proc.returncode}. "
+                    f"STDOUT: {stdout_t} STDERR: {stderr_t}"
+                )
+            if stdout_t:
+                self._log(f"sDNA stdout (DW={dw_field}): {stdout_t}", Qgis.Info)
+            if stderr_t:
+                self._log(f"sDNA stderr (DW={dw_field}): {stderr_t}", Qgis.Warning)
 
             # espera o SHP completo e estável (até 240s)
             if not self._wait_for_complete_shp(base_no_ext, timeout_s=240):

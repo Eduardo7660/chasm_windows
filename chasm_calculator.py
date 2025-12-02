@@ -988,44 +988,78 @@ class Chasm:
             self._cleanup_shp_bundle(base_no_ext)  # limpa resíduos
 
             # ---- Executa sDNA via CLI externo (fora do Processing/QGIS)
-            opts = [
-                ("metric", metric_val_str.lower()),
-                ("radii", radii_str),
-                ("destweight", dw_field),
-            ]
-            if radius_mode_str == "continuous":
-                opts.append(("cont", "true"))
-            if bet_val:
-                opts.append(("betweenness", "true"))
-                if bet_bi_val:
-                    opts.append(("bidir", "true"))
-            if weighting_val_raw:
-                # CLI do sDNA integral não aceita "weighting"; loga e ignora
-                self._log(
-                    f"sDNA CLI: parâmetro 'weighting' não suportado; ignorando valor '{weighting_val_raw}'.",
-                    Qgis.Warning
-                )
-            if origin_weight_val:
-                opts.append(("origweight", origin_weight_val))
-            if metric_val_str == "CUSTOM" and custom_metric_field:
-                opts.append(("custommetric", custom_metric_field))
+            weighting_warned = False
 
-            param_str = ";".join(f"{k}={v}" for k, v in opts if v not in (None, ""))
-            cmd = [sdna_exe, "-i", in_shp, "-o", out_shp, param_str]
-            self._log(f"Etapa 2a: executando CLI: {' '.join(cmd)}", Qgis.Info)
+            def _build_opts(include_bet=True):
+                nonlocal weighting_warned
+                opts = [
+                    ("metric", metric_val_str.lower()),
+                    ("radii", radii_str),
+                    ("destweight", dw_field),
+                ]
+                if radius_mode_str == "continuous":
+                    opts.append(("cont", "true"))
+                if include_bet and bet_val:
+                    opts.append(("betweenness", "true"))
+                    if bet_bi_val:
+                        opts.append(("bidir", "true"))
+                if weighting_val_raw and not weighting_warned:
+                    # CLI do sDNA integral não aceita "weighting"; loga e ignora
+                    self._log(
+                        f"sDNA CLI: parâmetro 'weighting' não suportado; ignorando valor '{weighting_val_raw}'.",
+                        Qgis.Warning
+                    )
+                    weighting_warned = True
+                if origin_weight_val:
+                    opts.append(("origweight", origin_weight_val))
+                if metric_val_str == "CUSTOM" and custom_metric_field:
+                    opts.append(("custommetric", custom_metric_field))
+                return opts
+
+            def _run_sdna_cli(include_bet=True):
+                opts = _build_opts(include_bet=include_bet)
+                param_str = ";".join(f"{k}={v}" for k, v in opts if v not in (None, ""))
+                cmd = [sdna_exe, "-i", in_shp, "-o", out_shp, param_str]
+                suffix = ""
+                if bet_val and not include_bet:
+                    suffix = " (sem betweenness)"
+                self._log(f"Etapa 2a: executando CLI{suffix}: {' '.join(cmd)}", Qgis.Info)
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                return proc, param_str, cmd
 
             try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                proc, param_str, cmd = _run_sdna_cli(include_bet=True)
             except Exception as e:
                 raise RuntimeError(f"Falha ao chamar '{sdna_exe}' para DW '{dw_field}': {e}") from e
 
             stdout_t = (proc.stdout or "").strip()
             stderr_t = (proc.stderr or "").strip()
+
+            bet_kw_error = False
+            if proc.returncode != 0:
+                bet_kw_error = bet_val and ("betweenness" in stdout_t.lower() or "betweenness" in stderr_t.lower())
+                if bet_kw_error:
+                    self._log(
+                        "sDNA não reconheceu o parâmetro 'betweenness'; tentando novamente sem ele.",
+                        Qgis.Warning, True
+                    )
+                    self._cleanup_shp_bundle(base_no_ext)
+                    proc, param_str, cmd = _run_sdna_cli(include_bet=False)
+                    stdout_t = (proc.stdout or "").strip()
+                    stderr_t = (proc.stderr or "").strip()
+
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"sDNA (DW '{dw_field}') retornou código {proc.returncode}. "
                     f"STDOUT: {stdout_t} STDERR: {stderr_t}"
                 )
+
+            if bet_kw_error:
+                self._log(
+                    "Betweenness foi desativado automaticamente (não suportado pela versão instalada do sDNA).",
+                    Qgis.Warning, True
+                )
+
             if stdout_t:
                 self._log(f"sDNA stdout (DW={dw_field}): {stdout_t}", Qgis.Info)
             if stderr_t:

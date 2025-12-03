@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
+import math
 
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant, QEventLoop
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox, QDialogButtonBox
 from qgis.core import (
@@ -76,6 +77,13 @@ class Chasm:
             pass
         if to_bar or level in (Qgis.Warning, Qgis.Critical):
             self._msg(text, level=level, duration=duration)
+
+    def _yield_ui(self):
+        """Processa eventos pendentes do Qt para evitar travar o QGIS."""
+        try:
+            QCoreApplication.processEvents(QEventLoop.AllEvents, 50)
+        except Exception:
+            pass
 
     def _find_sdna_integral_alg(self):
         try:
@@ -349,6 +357,7 @@ class Chasm:
         sector_len_sum, sector_len_max = {}, {}
         self._log("Etapa 1.9: agregando comprimentos por setor", Qgis.Info)
         for f in with_concat.getFeatures():
+            self._yield_ui()
             sid_key = "" if f[setor_idx] is None else str(f[setor_idx]).strip()
             try:
                 l = float(f[len_idx] or 0.0)
@@ -379,6 +388,8 @@ class Chasm:
         self._log(f"Etapa 1.10: distribuindo valores por {feat_count} segmentos (log a cada {log_every})", Qgis.Info)
 
         for i, f in enumerate(with_concat.getFeatures(), start=1):
+            if i % 200 == 0:
+                self._yield_ui()
             sid_key = "" if f[setor_idx] is None else str(f[setor_idx]).strip()
             try:
                 l = float(f[len_idx] or 0.0)
@@ -424,6 +435,7 @@ class Chasm:
         self._log("Etapa 1.12: somando g_in_exist/g_ou_exist por setor nos polígonos", Qgis.Info)
         sums_by_sector = {}
         for f in with_concat.getFeatures():
+            self._yield_ui()
             sid_key = "" if f[setor_idx] is None else str(f[setor_idx]).strip()
             gi_f = float(f[gi_idx] or 0.0)
             go_f = float(f[go_idx] or 0.0)
@@ -441,6 +453,7 @@ class Chasm:
         go_s_idx = fixed_polys.fields().indexOf("g_ou_sum")
 
         for pf in fixed_polys.getFeatures():
+            self._yield_ui()
             sid_key = "" if pf[poly_id_field] is None else str(pf[poly_id_field]).strip()
             gi_s, go_s = sums_by_sector.get(sid_key, (0.0, 0.0))
             fixed_polys.changeAttributeValue(pf.id(), gi_s_idx, gi_s)
@@ -681,6 +694,7 @@ class Chasm:
             if all(os.path.exists(path_no_ext + ext) for ext in (".shp", ".shx", ".dbf")):
                 break
             time.sleep(0.25)
+            self._yield_ui()
         else:
             return False  # não apareceu
 
@@ -700,6 +714,7 @@ class Chasm:
         last = sizes()
         while time.time() - start < timeout_s:
             time.sleep(0.25)
+            self._yield_ui()
             cur = sizes()
             if cur == last and all(v > 0 for v in cur):
                 stable_ticks += 1
@@ -711,10 +726,130 @@ class Chasm:
 
         return False
 
-    # ------------------------------ Runner sDNA + JOIN MAD (2a + 2b) ------------------------------
+    # --- métricas BTA (pós-join) ---
+    def _compute_bta_metrics(self, layer):
+        """Calcula métricas globais BTA e grava valores constantes em cada feição."""
+        if layer is None or not hasattr(layer, "isValid") or not layer.isValid():
+            raise RuntimeError("Camada final inválida para cálculo das métricas BTA.")
+
+        required_fields = [
+            "bta_int_exist",
+            "bta_out_exist",
+            "bta_int_ns",
+            "bta_out_ns",
+        ]
+        field_names = [f.name() for f in layer.fields()]
+        missing = [f for f in required_fields if f not in field_names]
+        if missing:
+            raise RuntimeError(f"Campos BTA ausentes: {', '.join(missing)}.")
+
+        sums = {k: 0.0 for k in required_fields}
+        for feat in layer.getFeatures():
+            self._yield_ui()
+            for fname in required_fields:
+                try:
+                    val = feat[fname]
+                except Exception:
+                    val = None
+                if val is None:
+                    continue
+                try:
+                    sums[fname] += float(val)
+                except Exception:
+                    continue
+
+        def _safe_div(num, den):
+            try:
+                return num / den if den not in (None, 0) else 0.0
+            except Exception:
+                return 0.0
+
+        lcp_exist = _safe_div(
+            sums["bta_int_exist"], sums["bta_int_exist"] + sums["bta_out_exist"]
+        )
+        lcp_ns = _safe_div(
+            sums["bta_int_ns"], sums["bta_int_ns"] + sums["bta_out_ns"]
+        )
+        lcp_exist_outros = _safe_div(
+            sums["bta_out_exist"], sums["bta_int_exist"] + sums["bta_out_exist"]
+        )
+        lcp_ns_out = _safe_div(
+            sums["bta_out_ns"], sums["bta_int_ns"] + sums["bta_out_ns"]
+        )
+
+        lcq_int = _safe_div(lcp_exist, lcp_ns)
+        lcq_outros = _safe_div(lcp_exist_outros, lcp_ns_out)
+
+        prop_den = lcq_int + lcq_outros
+        prop_lcq_int = _safe_div(lcq_int, prop_den)
+        prop_lcq_outros = _safe_div(lcq_outros, prop_den)
+
+        term_int = prop_lcq_int * math.log(prop_lcq_int) if prop_lcq_int > 0 else 0.0
+        term_out = (
+            prop_lcq_outros * math.log(prop_lcq_outros)
+            if prop_lcq_outros > 0
+            else 0.0
+        )
+        ej = -1.0 * (term_int + term_out) / math.log(2)
+        chasm_val = 1.0 - ej
+
+        metrics = {
+            "bta_lcp_exist": lcp_exist,
+            "bta_lcp_ns": lcp_ns,
+            "bta_lcp_exist_outros": lcp_exist_outros,
+            "bta_lcp_ns_out": lcp_ns_out,
+            "bta_lcq_int": lcq_int,
+            "bta_lcq_outros": lcq_outros,
+            "bta_prop_lcq_int": prop_lcq_int,
+            "bta_prop_lcq_outros": prop_lcq_outros,
+            "bta_ej": ej,
+            "bta_chasm": chasm_val,
+        }
+
+        # adiciona campos se ainda não existirem
+        provider = layer.dataProvider()
+        new_fields = []
+        for name in metrics:
+            if name not in field_names:
+                new_fields.append(QgsField(name, QVariant.Double, len=20, prec=12))
+        if new_fields:
+            if not provider.addAttributes(new_fields):
+                raise RuntimeError("Falha ao adicionar campos das métricas BTA.")
+            layer.updateFields()
+
+        idx_map = {name: layer.fields().indexOf(name) for name in metrics}
+        changes = {}
+        for feat in layer.getFeatures():
+            self._yield_ui()
+            fid = feat.id()
+            changes[fid] = {
+                idx_map[name]: metrics[name]
+                for name in metrics
+                if idx_map[name] >= 0
+            }
+
+        if not changes:
+            return
+
+        was_editable = layer.isEditable()
+        started = was_editable or layer.startEditing()
+        ok = provider.changeAttributeValues(changes)
+        if not ok:
+            raise RuntimeError("Falha ao gravar valores das métricas BTA.")
+        if started and not was_editable:
+            layer.commitChanges()
+        layer.triggerRepaint()
+
+        self._log(
+            "Etapa 2c: métricas BTA (Lcp/Lcq/Prop/Ej/Chasm) calculadas e gravadas.",
+            Qgis.Success,
+            True,
+        )
+
+    # ------------------------------ Runner sDNA + JOIN BTA (2a + 2b) ------------------------------
     def _sdna_integral_and_join_mad(self, base_line_layer, sdna_ui_params=None):
         """
-        Executa sDNA Integral + JOIN do campo MAD resultante de cada DW.
+        Executa sDNA Integral + JOIN do campo BTA (MAD renomeado) resultante de cada DW.
         Exporta sempre para SHP físico, aguarda escrita estabilizar e usa nomes curtos.
         """
         import os, uuid, time, re, tempfile, shutil, subprocess
@@ -725,7 +860,7 @@ class Chasm:
         )
         from qgis.PyQt.QtCore import QVariant
 
-        self._log("Etapa 2: iniciando sDNA (2a) + JOIN MAD (2b)...", Qgis.Info, True)
+        self._log("Etapa 2: iniciando sDNA (2a) + JOIN BTA (2b)...", Qgis.Info, True)
 
         # Binário externo do sDNA (fora do ambiente do QGIS)
         sdna_bin = os.environ.get("CHASM_SDNA_BIN", "sdnaintegral")
@@ -772,12 +907,12 @@ class Chasm:
         # radii precisa ser string
         radii_str = str(radius_val)
 
-        # Nomes finais para MAD no layer de saída
+        # Nomes finais para BTA no layer de saída
         dst_map = {
-            (dest_weights[0] or 'g_in_exist'): 'mad_int_exist',
-            (dest_weights[1] or 'g_ou_exist'): 'mad_out_exist',
-            (dest_weights[2] or 'g_int_ns')  : 'mad_int_ns',
-            (dest_weights[3] or 'g_ou_ns')   : 'mad_out_ns'
+            (dest_weights[0] or 'g_in_exist'): 'bta_int_exist',
+            (dest_weights[1] or 'g_ou_exist'): 'bta_out_exist',
+            (dest_weights[2] or 'g_int_ns')  : 'bta_int_ns',
+            (dest_weights[3] or 'g_ou_ns')   : 'bta_out_ns'
         }
         run_order = [dw for dw in dest_weights if dw]
 
@@ -797,7 +932,7 @@ class Chasm:
             base = base.strip('_') or 'layer'
             return base[:maxlen] or 'layer'
 
-        def _run_sdna_once(dw_field: str):
+        def _prepare_sdna_once(dw_field: str):
             # Sanity
             if current is None or not hasattr(current, "isValid") or not current.isValid():
                 raise RuntimeError("Camada de entrada para sDNA está inválida ou None.")
@@ -1024,46 +1159,58 @@ class Chasm:
                 if bet_val and not include_bet:
                     suffix = " (sem betweenness)"
                 self._log(f"Etapa 2a: executando CLI{suffix}: {' '.join(cmd)}", Qgis.Info)
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 return proc, param_str, cmd
 
-            try:
-                proc, param_str, cmd = _run_sdna_cli(include_bet=True)
-            except Exception as e:
-                raise RuntimeError(f"Falha ao chamar '{sdna_exe}' para DW '{dw_field}': {e}") from e
+            return {
+                "dw": dw_field,
+                "orig_dw": dw_field,
+                "tmp_dir": tmp_dir,
+                "out_shp": out_shp,
+                "base_no_ext": base_no_ext,
+                "run_cli": _run_sdna_cli,
+            }
 
-            stdout_t = (proc.stdout or "").strip()
-            stderr_t = (proc.stderr or "").strip()
 
-            bet_kw_error = False
-            if proc.returncode != 0:
-                bet_kw_error = bet_val and ("betweenness" in stdout_t.lower() or "betweenness" in stderr_t.lower())
-                if bet_kw_error:
-                    self._log(
-                        "sDNA não reconheceu o parâmetro 'betweenness'; tentando novamente sem ele.",
-                        Qgis.Warning, True
-                    )
-                    self._cleanup_shp_bundle(base_no_ext)
-                    proc, param_str, cmd = _run_sdna_cli(include_bet=False)
-                    stdout_t = (proc.stdout or "").strip()
-                    stderr_t = (proc.stderr or "").strip()
+        # ===== Loop por DWs: executa CLIs em paralelo, depois faz JOIN sequencial =====
+        pending = []
+        for dw in run_order:
+            info = _prepare_sdna_once(dw)
+            if info is None:
+                continue
+            info["orig_dw"] = dw
+
+            proc, param_str, cmd = info["run_cli"](include_bet=True)
+            info["proc"] = proc
+            info["param_str"] = param_str
+            info["cmd"] = cmd
+            info["bet_retry_used"] = False
+            pending.append(info)
+            self._log(f"Etapa 2a: CLI lançado (DW='{dw}') -> {' '.join(cmd)}", Qgis.Info)
+
+        for info in pending:
+            dw = info.get("dw")
+            dw_orig = info.get("orig_dw", dw)
+            proc = info["proc"]
+            stdout_t, stderr_t = proc.communicate()
+            self._yield_ui()
+            stdout_t = (stdout_t or "").strip()
+            stderr_t = (stderr_t or "").strip()
 
             if proc.returncode != 0:
                 raise RuntimeError(
-                    f"sDNA (DW '{dw_field}') retornou código {proc.returncode}. "
+                    f"sDNA (DW '{dw}') retornou código {proc.returncode}. "
                     f"STDOUT: {stdout_t} STDERR: {stderr_t}"
                 )
 
-            if bet_kw_error:
-                self._log(
-                    "Betweenness foi desativado automaticamente (não suportado pela versão instalada do sDNA).",
-                    Qgis.Warning, True
-                )
-
             if stdout_t:
-                self._log(f"sDNA stdout (DW={dw_field}): {stdout_t}", Qgis.Info)
+                self._log(f"sDNA stdout (DW={dw}): {stdout_t}", Qgis.Info)
             if stderr_t:
-                self._log(f"sDNA stderr (DW={dw_field}): {stderr_t}", Qgis.Warning)
+                self._log(f"sDNA stderr (DW={dw}): {stderr_t}", Qgis.Warning)
+
+            out_shp = info["out_shp"]
+            base_no_ext = info["base_no_ext"]
+            out_name = f"{base_line_layer.name()}_sDNA_{dw_orig}"
 
             # espera o SHP completo e estável (até 240s)
             if not self._wait_for_complete_shp(base_no_ext, timeout_s=240):
@@ -1083,26 +1230,23 @@ class Chasm:
                 side_ok, size_ok = False, False
 
             # 1) tentativa direta
-            out_name = f"{base_line_layer.name()}_sDNA_{dw_field}"
             out_lyr = None
             if side_ok and size_ok:
                 out_lyr = QgsVectorLayer(out_shp, out_name, "ogr")
                 if not out_lyr or not out_lyr.isValid():
-                    # dá mais uma chance (latência de FS)
                     time.sleep(0.5)
                     out_lyr = QgsVectorLayer(out_shp, out_name, "ogr")
 
             # 2) fallback: converter para GPKG com GDAL e carregar
             if not out_lyr or not out_lyr.isValid():
                 try:
-                    gpkg_tmp = os.path.join(tmp_dir, f"{shp_base}.gpkg")
+                    gpkg_tmp = os.path.join(info["tmp_dir"], f"{os.path.splitext(os.path.basename(out_shp))[0]}.gpkg")
                     vt = pr.run("gdal:vectortranslate", {
                         "INPUT": out_shp,
                         "OUTPUT": gpkg_tmp,
                         "LAYER_NAME": "sdna",
-                        # opções extras que ajudam shapefiles “enjoados”
                         "OPTIONS": "",
-                        "GEOMETRY": "PROMOTE_TO_MULTI",   # garante multilinhas se preciso
+                        "GEOMETRY": "PROMOTE_TO_MULTI",
                     })
                     out_lyr = QgsVectorLayer(gpkg_tmp, out_name, "ogr")
                 except Exception as e:
@@ -1132,35 +1276,26 @@ class Chasm:
                         "e se o driver de saída está OK no ambiente."
                     )
 
-            # sucesso final?
             if not out_lyr or not out_lyr.isValid():
                 raise RuntimeError(f"sDNA terminou, mas a saída não pôde ser carregada (nem com fallbacks): {out_shp}")
 
-            # adiciona e segue
             out_lyr.setName(out_name)
-            return out_lyr
-
-
-        # ===== Loop por DWs =====
-        for dw in run_order:
-            out_lyr = _run_sdna_once(dw)
-
-            out_lyr.setName(f"{base_line_layer.name()}_sDNA_{dw}")
             QgsProject.instance().addMapLayer(out_lyr)
             self._log(
                 f"Etapa 2a: OK DW='{dw}' -> '{out_lyr.name()}' ({out_lyr.featureCount()} feições)",
                 Qgis.Success
             )
 
-            # Campo MAD*
+            # Campo BTA (aceita saída MAD ou BTA do sDNA)
             mad_field = None
             for f in out_lyr.fields():
-                if f.name().upper().startswith('MAD'):
+                upper = f.name().upper()
+                if upper.startswith('MAD') or upper.startswith('BTA'):
                     mad_field = f.name(); break
             if not mad_field:
-                raise RuntimeError(f"Campo MAD* não encontrado na saída do sDNA para DW '{dw}'.")
+                raise RuntimeError(f"Campo BTA/MAD* não encontrado na saída do sDNA para DW '{dw}'.")
 
-            # 2b — JOIN MAD (equals -> fallback intersects)
+            # 2b — JOIN BTA (equals -> fallback intersects)
             try:
                 joined = pr.run("native:joinattributesbylocation", {
                     "INPUT": current, "JOIN": out_lyr,
@@ -1179,11 +1314,11 @@ class Chasm:
                 })["OUTPUT"]
 
             target_name = {
-                (dest_weights[0] or 'g_in_exist'): 'mad_int_exist',
-                (dest_weights[1] or 'g_ou_exist'): 'mad_out_exist',
-                (dest_weights[2] or 'g_int_ns')  : 'mad_int_ns',
-                (dest_weights[3] or 'g_ou_ns')   : 'mad_out_ns'
-            }.get(dw, f"mad_{dw}".replace(" ", "_").lower()[:30])
+                (dest_weights[0] or 'g_in_exist'): 'bta_int_exist',
+                (dest_weights[1] or 'g_ou_exist'): 'bta_out_exist',
+                (dest_weights[2] or 'g_int_ns')  : 'bta_int_ns',
+                (dest_weights[3] or 'g_ou_ns')   : 'bta_out_ns'
+            }.get(dw_orig, f"bta_{dw_orig}".replace(" ", "_").lower()[:30])
 
             with_new = pr.run("native:fieldcalculator", {
                 "INPUT": joined, "FIELD_NAME": target_name,
@@ -1196,12 +1331,18 @@ class Chasm:
 
             current = cleaned
             results_info.append((dw, out_lyr.name(), mad_field, target_name))
-            self._log(f"Etapa 2b: JOIN MAD concluído (DW='{dw}')", Qgis.Success)
+            self._log(f"Etapa 2b: JOIN BTA concluído (DW='{dw}')", Qgis.Success)
 
-        current.setName(f"{base_line_layer.name()}_with_MAD")
+        current.setName(f"{base_line_layer.name()}_with_BTA")
         QgsProject.instance().addMapLayer(current)
         for dw, out_name, mad_src, mad_dst in results_info:
-            self._log(f"JOIN MAD resumo: DW={dw} saída='{out_name}' {mad_src} -> {mad_dst}", Qgis.Info)
+            self._log(f"JOIN BTA resumo: DW={dw} saída='{out_name}' {mad_src} -> {mad_dst}", Qgis.Info)
+
+        try:
+            self._compute_bta_metrics(current)
+        except Exception as e:
+            self._log(f"Etapa 2c: falha ao calcular métricas BTA: {e}", Qgis.Warning, True)
+
         self._log(f"Etapa 2: concluída — camada final '{current.name()}'", Qgis.Success, True)
         return current
 
@@ -1316,14 +1457,14 @@ class Chasm:
             except Exception:
                 pass
 
-            self._log("OK/Final: iniciando Etapa 2 (sDNA + JOIN MAD)...", Qgis.Info, True)
+            self._log("OK/Final: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info, True)
             enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
             self._log(
-                f"OK/Final: Etapa 2 concluída -> '{enriched.name()}' com campos MAD.",
+                f"OK/Final: Etapa 2 concluída -> '{enriched.name()}' com campos BTA.",
                 Qgis.Success, True
             )
             self._msg(
-                f"Etapa 2 concluída: '{enriched.name()}' com MADs adicionados.",
+                f"Etapa 2 concluída: '{enriched.name()}' com BTAs adicionados.",
                 Qgis.Success, 8
             )
 
@@ -1388,15 +1529,15 @@ class Chasm:
             except Exception:
                 pass
 
-            self._log("TESTE: iniciando Etapa 2 (sDNA + JOIN MAD)...", Qgis.Info)
+            self._log("TESTE: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info)
             enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
             self._log(
-                f"TESTE: Etapa 2 concluída -> '{enriched.name()}' com MADs.",
+                f"TESTE: Etapa 2 concluída -> '{enriched.name()}' com BTAs.",
                 Qgis.Success, True
             )
 
             self._msg(
-                f"Concluído (Teste): '{enriched.name()}' com MADs adicionados.",
+                f"Concluído (Teste): '{enriched.name()}' com BTAs adicionados.",
                 Qgis.Success, 10
             )
 
@@ -1472,10 +1613,10 @@ class Chasm:
             except Exception:
                 pass
 
-            self._log("Dialog-Fragment: iniciando Etapa 2 (sDNA + JOIN MAD)...", Qgis.Info)
+            self._log("Dialog-Fragment: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info)
             enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
             self._log(
-                f"Dialog-Fragment: Etapa 2 concluída -> '{enriched.name()}' com MADs.",
+                f"Dialog-Fragment: Etapa 2 concluída -> '{enriched.name()}' com BTAs.",
                 Qgis.Success, True
             )
 

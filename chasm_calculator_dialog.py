@@ -28,7 +28,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
     Compatível com:
       - cbPoligonoLayer, cbPoligonoIdField, cbGrupoInteresseField, cbGrupoOutriField
       - cbNetworkLayer
-      - cbDW1..cbDW4 (Destination Weights editáveis)
       - cbMetric, spinRadius, rbBand / rbContinuous, cbWeighting, cbOriginWeight
       - btnFragmentLines
       - buttonBox (Ok/Cancel)
@@ -55,10 +54,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
         if self.btnAddRow:        self.btnAddRow.clicked.connect(self.on_add_row)
         if self.btnRemoveRows:    self.btnRemoveRows.clicked.connect(self.on_remove_rows)
         if self.btnRefreshLayers: self.btnRefreshLayers.clicked.connect(self.refresh_all_layer_combos)
-
-        # sDNA: habilita/disable bidirecional conforme checkbox principal
-        if hasattr(self, 'chkBetweenness'):
-            self.chkBetweenness.toggled.connect(self._toggle_betweenness_children)
 
         # Combos de camadas
         self._populate_network_layers()
@@ -222,10 +217,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
         return count_added > 0
 
     # ---------- sDNA ----------
-    def _toggle_betweenness_children(self, checked: bool):
-        if hasattr(self, 'chkBetweennessBidirectional'):
-            self.chkBetweennessBidirectional.setEnabled(checked)
-
     def _populate_network_layers(self):
         # cbNetworkLayer (linhas)
         if hasattr(self, 'cbNetworkLayer'):
@@ -261,12 +252,8 @@ class ChasmDialog(QDialog, FORM_CLASS):
 
     def _populate_attribute_combos_network(self):
         """
-        Preenche Destination Weights (se existirem) com os campos da camada de rede.
-        Defaults: g_in_exist, g_ou_exist, g_int_ns, g_ou_ns.
+        Preenche apenas campos dependentes da rede (origin weight, se existir).
         """
-        if not all(hasattr(self, n) for n in ("cbDW1", "cbDW2", "cbDW3", "cbDW4")):
-            return
-
         lyr = self._current_layer_from_combo(self.cbNetworkLayer) if hasattr(self, "cbNetworkLayer") else None
         names = [f.name() for f in lyr.fields()] if (lyr and lyr.isValid()) else []
 
@@ -284,12 +271,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
 
         if hasattr(self, "cbOriginWeight"):
             fill(self.cbOriginWeight, "")
-
-        fill(self.cbDW1, "g_in_exist")
-        fill(self.cbDW2, "g_ou_exist")
-        fill(self.cbDW3, "g_int_ns")
-        fill(self.cbDW4, "g_ou_ns")
-        self._append_status("Destination Weights sugeridos: g_in_exist, g_ou_exist, g_int_ns, g_ou_ns.")
 
     # ===== helpers de campos =====
     def _fill_field_combo(self, combo: QComboBox, layer: QgsVectorLayer,
@@ -436,14 +417,8 @@ class ChasmDialog(QDialog, FORM_CLASS):
         Lê os parâmetros visuais da aba sDNA.
         NOTA: O chasm_calculator.py realiza a resolução dinâmica dos nomes de parâmetros do algoritmo.
         """
-        bet = bool(getattr(self, 'chkBetweenness', None).isChecked()) if hasattr(self, 'chkBetweenness') else False
-        betw_bi = bool(getattr(self, 'chkBetweennessBidirectional', None).isChecked()) if hasattr(self, 'chkBetweennessBidirectional') else False
         metric = self.cbMetric.currentText().strip() if hasattr(self, 'cbMetric') else "ANGULAR"
         weighting = self.cbWeighting.currentText().strip() if hasattr(self, 'cbWeighting') else ""
-
-        dw_vals = self._dw_values_or_log()
-        dw1, dw2, dw3, dw4 = (dw_vals + ["", "", "", ""])[:4]
-        dest_weights = [dw1, dw2, dw3, dw4]
 
         origin_weight = self._read_text_like_combo(getattr(self, 'cbOriginWeight', None))
 
@@ -462,20 +437,12 @@ class ChasmDialog(QDialog, FORM_CLASS):
         if hasattr(self, 'rbContinuous') and self.rbContinuous.isChecked():
             radius_mode = "radius"
 
-        try:
-            self._append_status(f"DW lidos: {dest_weights}")
-        except Exception:
-            pass
-
         return {
-            "betweenness": bet,
-            "betw_bidirectional": betw_bi,
             "metric": metric,
             "radius": radius,
             "radius_mode": radius_mode,
             "weighting": weighting,
             "origin_weight": origin_weight,
-            "dest_weights": dest_weights
         }
 
     def _read_text_like_combo(self, w):
@@ -493,28 +460,6 @@ class ChasmDialog(QDialog, FORM_CLASS):
         except Exception:
             pass
         return ""
-
-    def _dw_values_or_log(self):
-        names = ("cbDW1", "cbDW2", "cbDW3", "cbDW4")
-        vals = []
-        missing = []
-        for n in names:
-            combo = getattr(self, n, None)
-            if combo is None:
-                missing.append(n)
-                vals.append("")
-                continue
-            try:
-                le = combo.lineEdit()
-                text = (le.text() if le else combo.currentText()) or ""
-            except Exception:
-                text = combo.currentText() or ""
-            vals.append(text.strip())
-        if missing:
-            self._append_status(f"[ERRO] Combos inexistentes no UI: {', '.join(missing)}")
-        else:
-            self._append_status(f"DW lidos (UI OK): {vals}")
-        return vals
 
     # ====== Suporte à fragmentação ======
     def selected_line_layer_id(self):

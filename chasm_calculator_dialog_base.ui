@@ -71,70 +71,13 @@
         </widget>
        </item>
 
-       <!-- Destination Weights (4 campos) -->
-       <item row="6" column="0">
-        <widget class="QLabel">
-         <property name="text"><string>Destination weight 1</string></property>
-        </widget>
-       </item>
-       <item row="6" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW1">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="7" column="0">
-        <widget class="QLabel">
-         <property name="text"><string>Destination weight 2</string></property>
-        </widget>
-       </item>
-       <item row="7" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW2">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="8" column="0">
-        <widget class="QLabel">
-         <property name="text"><string>Destination weight 3</string></property>
-        </widget>
-       </item>
-       <item row="8" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW3">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
-       <item row="9" column="0">
-        <widget class="QLabel">
-         <property name="text"><string>Destination weight 4</string></property>
-        </widget>
-       </item>
-       <item row="9" column="1" colspan="2">
-        <widget class="QComboBox" name="cbDW4">
-         <property name="editable"><bool>true</bool></property>
-        </widget>
-       </item>
-
        <!-- Parâmetros -->
-       <item row="10" column="0">
-        <widget class="QCheckBox" name="chkBetweenness">
-         <property name="text"><string>Compute betweenness (opcional)</string></property>
-        </widget>
-       </item>
-       <item row="10" column="1" colspan="2">
-        <widget class="QCheckBox" name="chkBetweennessBidirectional">
-         <property name="text"><string>Betweenness bidirecional</string></property>
-         <property name="enabled"><bool>false</bool></property>
-        </widget>
-       </item>
-
-       <item row="11" column="0">
+       <item row="6" column="0">
         <widget class="QLabel">
          <property name="text"><string>Métrica</string></property>
         </widget>
        </item>
-       <item row="11" column="1">
+       <item row="6" column="1">
         <widget class="QComboBox" name="cbMetric">
          <item><property name="text"><string>ANGULAR</string></property></item>
          <item><property name="text"><string>EUCLIDEAN</string></property></item>
@@ -142,12 +85,12 @@
         </widget>
        </item>
 
-       <item row="12" column="0">
+       <item row="7" column="0">
         <widget class="QLabel">
          <property name="text"><string>Raio (m)</string></property>
         </widget>
        </item>
-       <item row="12" column="1">
+       <item row="7" column="1">
         <widget class="QSpinBox" name="spinRadius">
          <property name="minimum"><number>0</number></property>
          <property name="maximum"><number>1000000</number></property>
@@ -155,7 +98,7 @@
          <property name="value"><number>1600</number></property>
         </widget>
        </item>
-       <item row="12" column="2">
+       <item row="7" column="2">
         <widget class="QWidget" native="true">
          <layout class="QHBoxLayout" name="hlRadiusMode">
           <item>
@@ -173,24 +116,24 @@
         </widget>
        </item>
 
-       <item row="13" column="0">
+       <item row="8" column="0">
         <widget class="QLabel">
          <property name="text"><string>Weighting</string></property>
         </widget>
        </item>
-       <item row="13" column="1">
+       <item row="8" column="1">
         <widget class="QComboBox" name="cbWeighting">
          <item><property name="text"><string>Link</string></property></item>
          <item><property name="text"><string>Node</string></property></item>
         </widget>
        </item>
 
-       <item row="14" column="0">
+       <item row="9" column="0">
         <widget class="QLabel">
          <property name="text"><string>Origin weight (opcional)</string></property>
         </widget>
        </item>
-       <item row="14" column="1" colspan="2">
+       <item row="9" column="1" colspan="2">
         <widget class="QComboBox" name="cbOriginWeight">
          <property name="editable"><bool>true</bool></property>
         </widget>

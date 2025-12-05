@@ -495,3 +495,24 @@ class ChasmDialog(QDialog, FORM_CLASS):
         if poly_layer and poly_layer.isValid():
             return self._auto_pick_polygon_id_field(poly_layer)
         return None
+
+    def selected_group_fields(self):
+        """
+        Retorna (campo_gi, campo_go) escolhidos nos combos do diálogo.
+        Não aplica fallback automático: se o usuário não escolher, volta None.
+        """
+        def pick(combo):
+            if combo is None or combo.count() == 0:
+                return None
+            data = combo.currentData()
+            text = (combo.currentText() or "").strip()
+            # ignora placeholders sem dado associado
+            if data is None and not text:
+                return None
+            if data is None and text.startswith("("):
+                return None
+            return text or data
+
+        gi_combo = getattr(self, "cbGrupoInteresseField", None)
+        go_combo = getattr(self, "cbGrupoOutriField", None)
+        return pick(gi_combo), pick(go_combo)

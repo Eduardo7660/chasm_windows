@@ -1581,21 +1581,29 @@ class Chasm:
                     self._msg(f"A camada de polígonos '{poly_layer.name()}' não possui campos.", Qgis.Critical, 10)
                     return
 
+            # campos de grupo: usa exatamente o que veio do diálogo (sem fallback)
             poly_names = [f.name() for f in poly_layer.fields()]
-            gi_candidates = ["grupo_interesse", "g_interesse", "gi", "GRUPO_INTERESSE", "GI"]
-            go_candidates = ["grupo_outros", "g_outros", "go", "GRUPO_OUTROS", "GO"]
-            def pick(cands):
-                for c in cands:
-                    if c in poly_names:
-                        return c
-                return None
-            gi_field = pick(gi_candidates) or "grupo_interesse"
-            go_field = pick(go_candidates) or "grupo_outros"
+            gi_field = go_field = None
+            try:
+                gi_field, go_field = self.dlg.selected_group_fields()
+            except Exception:
+                pass
             missing = []
-            if gi_field not in poly_names: missing.append(gi_field)
-            if go_field not in poly_names: missing.append(go_field)
+            if gi_field and gi_field not in poly_names:
+                missing.append(gi_field)
+            if go_field and go_field not in poly_names:
+                missing.append(go_field)
+            if not gi_field:
+                missing.append("(grupo_interesse não selecionado)")
+            if not go_field:
+                missing.append("(grupo_outros não selecionado)")
             if missing:
-                self._log(f"Dialog-Fragment: campos ausentes: {', '.join(missing)} (pulando).", Qgis.Warning)
+                self._log(f"Dialog-Fragment: campos ausentes/indefinidos: {', '.join(missing)} (distribuição proporcional será pulada onde faltar).", Qgis.Warning)
+
+            self._log(
+                f"Dialog-Fragment: usando campos -> ID setor='{poly_id_field}', GI='{gi_field}', GO='{go_field}'",
+                Qgis.Info, True
+            )
 
             self._log("Dialog-Fragment: chamando fragment_lines_by_polygons(...) (Etapa 1)", Qgis.Info)
             out = self.fragment_lines_by_polygons(
@@ -1608,25 +1616,6 @@ class Chasm:
             )
 
             self._log(f"Dialog-Fragment: Etapa 1 concluída -> '{out.name()}' ({out.featureCount()} feições)", Qgis.Success, True)
-
-            # parâmetros da UI
-            sdna_params = None
-            try:
-                sdna_params = self.dlg.sdna_params()
-            except Exception:
-                pass
-
-            self._log("Dialog-Fragment: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info)
-            enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
-            self._log(
-                f"Dialog-Fragment: Etapa 2 concluída -> '{enriched.name()}' com BTAs.",
-                Qgis.Success, True
-            )
-
-            self._msg(
-                f"Fragmentação concluída + sDNA/JOIN: '{enriched.name()}'.",
-                Qgis.Success, 10
-            )
 
         except Exception as e:
             self._log(f"Dialog-Fragment: Erro na fragmentação: {e}", Qgis.Critical, True)

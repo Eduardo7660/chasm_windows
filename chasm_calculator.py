@@ -369,14 +369,14 @@ class Chasm:
         prov = with_concat.dataProvider()
         if not with_concat.isEditable():
             with_concat.startEditing()
-        for nm in ("g_in_exist", "g_ou_exist", "g_int_ns", "g_ou_ns", "comp_line", "comp_max_setor"):
+        for nm in ("g_in_exist", "g_ou_exist", "g_in_ns", "g_ou_ns", "comp_line", "comp_max_setor"):
             if with_concat.fields().indexOf(nm) < 0:
                 prov.addAttributes([QgsField(nm, QVariant.Double)])
         with_concat.updateFields()
 
         gi_idx   = with_concat.fields().indexOf("g_in_exist")
         go_idx   = with_concat.fields().indexOf("g_ou_exist")
-        gin_idx  = with_concat.fields().indexOf("g_int_ns")
+        gin_idx  = with_concat.fields().indexOf("g_in_ns")
         gon_idx  = with_concat.fields().indexOf("g_ou_ns")
         cli_idx  = with_concat.fields().indexOf("comp_line")
         cmax_idx = with_concat.fields().indexOf("comp_max_setor")
@@ -421,7 +421,7 @@ class Chasm:
                     (f"[Etapa1/seg] id={f.id()} line_sector_id='{lsid}' setor='{sid_key}' "
                      f"len={l:.3f} max_setor={max_len_sector:.3f} sum_len={total_len:.3f} frac={frac:.6f} "
                      f"GI_tot={gi_total} GO_tot={go_total} -> "
-                     f"g_in_exist={gi_val} g_ou_exist={go_val} g_int_ns={gi_ns_val} g_ou_ns={go_ns_val}"),
+                     f"g_in_exist={gi_val} g_ou_exist={go_val} g_in_ns={gi_ns_val} g_ou_ns={go_ns_val}"),
                     Qgis.Info
                 )
 
@@ -728,14 +728,14 @@ class Chasm:
 
     # --- métricas BTA (pós-join) ---
     def _compute_bta_metrics(self, layer):
-        """Calcula métricas globais BTA e grava valores constantes em cada feição."""
+        """Calcula métricas BTA por segmento e grava nos atributos da feição (campos Lcp/Lcq/Prop/Ej/Chasm)."""
         if layer is None or not hasattr(layer, "isValid") or not layer.isValid():
             raise RuntimeError("Camada final inválida para cálculo das métricas BTA.")
 
         required_fields = [
-            "bta_int_exist",
+            "bta_in_exist",
             "bta_out_exist",
-            "bta_int_ns",
+            "bta_in_ns",
             "bta_out_ns",
         ]
         field_names = [f.name() for f in layer.fields()]
@@ -743,73 +743,28 @@ class Chasm:
         if missing:
             raise RuntimeError(f"Campos BTA ausentes: {', '.join(missing)}.")
 
-        sums = {k: 0.0 for k in required_fields}
-        for feat in layer.getFeatures():
-            self._yield_ui()
-            for fname in required_fields:
-                try:
-                    val = feat[fname]
-                except Exception:
-                    val = None
-                if val is None:
-                    continue
-                try:
-                    sums[fname] += float(val)
-                except Exception:
-                    continue
-
         def _safe_div(num, den):
             try:
                 return num / den if den not in (None, 0) else 0.0
             except Exception:
                 return 0.0
 
-        lcp_exist = _safe_div(
-            sums["bta_int_exist"], sums["bta_int_exist"] + sums["bta_out_exist"]
-        )
-        lcp_ns = _safe_div(
-            sums["bta_int_ns"], sums["bta_int_ns"] + sums["bta_out_ns"]
-        )
-        lcp_exist_outros = _safe_div(
-            sums["bta_out_exist"], sums["bta_int_exist"] + sums["bta_out_exist"]
-        )
-        lcp_ns_out = _safe_div(
-            sums["bta_out_ns"], sums["bta_int_ns"] + sums["bta_out_ns"]
-        )
-
-        lcq_int = _safe_div(lcp_exist, lcp_ns)
-        lcq_outros = _safe_div(lcp_exist_outros, lcp_ns_out)
-
-        prop_den = lcq_int + lcq_outros
-        prop_lcq_int = _safe_div(lcq_int, prop_den)
-        prop_lcq_outros = _safe_div(lcq_outros, prop_den)
-
-        term_int = prop_lcq_int * math.log(prop_lcq_int) if prop_lcq_int > 0 else 0.0
-        term_out = (
-            prop_lcq_outros * math.log(prop_lcq_outros)
-            if prop_lcq_outros > 0
-            else 0.0
-        )
-        ej = -1.0 * (term_int + term_out) / math.log(2)
-        chasm_val = 1.0 - ej
-
-        metrics = {
-            "bta_lcp_exist": lcp_exist,
-            "bta_lcp_ns": lcp_ns,
-            "bta_lcp_exist_outros": lcp_exist_outros,
-            "bta_lcp_ns_out": lcp_ns_out,
-            "bta_lcq_int": lcq_int,
-            "bta_lcq_outros": lcq_outros,
-            "bta_prop_lcq_int": prop_lcq_int,
-            "bta_prop_lcq_outros": prop_lcq_outros,
-            "bta_ej": ej,
-            "bta_chasm": chasm_val,
-        }
-
         # adiciona campos se ainda não existirem
         provider = layer.dataProvider()
         new_fields = []
-        for name in metrics:
+        metric_names = [
+            "Lcp_exist",
+            "Lcp_ns",
+            "Lcp_exist_outros",
+            "Lcp_ns_out",
+            "Lcq_int",
+            "Lcq_outros",
+            "Prop_Lcq_int",
+            "Prop_Lcq_outros",
+            "Ej",
+            "Chasm",
+        ]
+        for name in metric_names:
             if name not in field_names:
                 new_fields.append(QgsField(name, QVariant.Double, len=20, prec=12))
         if new_fields:
@@ -817,11 +772,58 @@ class Chasm:
                 raise RuntimeError("Falha ao adicionar campos das métricas BTA.")
             layer.updateFields()
 
-        idx_map = {name: layer.fields().indexOf(name) for name in metrics}
+        idx_map = {name: layer.fields().indexOf(name) for name in metric_names}
+        src_idx = {name: layer.fields().indexOf(name) for name in required_fields}
+
+        def _safe_float(val):
+            try:
+                return float(val) if val not in (None, "") else 0.0
+            except Exception:
+                return 0.0
+
         changes = {}
         for feat in layer.getFeatures():
             self._yield_ui()
             fid = feat.id()
+            bta_in_exist = _safe_float(feat[src_idx["bta_in_exist"]])
+            bta_out_exist = _safe_float(feat[src_idx["bta_out_exist"]])
+            bta_in_ns = _safe_float(feat[src_idx["bta_in_ns"]])
+            bta_out_ns = _safe_float(feat[src_idx["bta_out_ns"]])
+
+            lcp_exist = _safe_div(bta_in_exist, bta_in_exist + bta_out_exist)
+            lcp_ns = _safe_div(bta_in_ns, bta_in_ns + bta_out_ns)
+            lcp_exist_outros = _safe_div(bta_out_exist, bta_in_exist + bta_out_exist)
+            lcp_ns_out = _safe_div(bta_out_ns, bta_in_ns + bta_out_ns)
+
+            lcq_int = _safe_div(lcp_exist, lcp_ns)
+            lcq_outros = _safe_div(lcp_exist_outros, lcp_ns_out)
+
+            prop_den = lcq_int + lcq_outros
+            prop_lcq_int = _safe_div(lcq_int, prop_den)
+            prop_lcq_outros = _safe_div(lcq_outros, prop_den)
+
+            term_int = prop_lcq_int * math.log(prop_lcq_int) if prop_lcq_int > 0 else 0.0
+            term_out = (
+                prop_lcq_outros * math.log(prop_lcq_outros)
+                if prop_lcq_outros > 0
+                else 0.0
+            )
+            ej = -1.0 * (term_int + term_out) / math.log(2)
+            chasm_val = 1.0 - ej
+
+            metrics = {
+                "Lcp_exist": lcp_exist,
+                "Lcp_ns": lcp_ns,
+                "Lcp_exist_outros": lcp_exist_outros,
+                "Lcp_ns_out": lcp_ns_out,
+                "Lcq_int": lcq_int,
+                "Lcq_outros": lcq_outros,
+                "Prop_Lcq_int": prop_lcq_int,
+                "Prop_Lcq_outros": prop_lcq_outros,
+                "Ej": ej,
+                "Chasm": chasm_val,
+            }
+
             changes[fid] = {
                 idx_map[name]: metrics[name]
                 for name in metrics
@@ -849,7 +851,7 @@ class Chasm:
     # ------------------------------ Runner sDNA + JOIN BTA (2a + 2b) ------------------------------
     def _sdna_integral_and_join_mad(self, base_line_layer, sdna_ui_params=None):
         """
-        Executa sDNA Integral + JOIN do campo BTA (MAD renomeado) resultante de cada DW.
+        Executa sDNA Integral + JOIN do campo BTA resultante de cada DW.
         Exporta sempre para SHP físico, aguarda escrita estabilizar e usa nomes curtos.
         """
         import os, uuid, time, re, tempfile, shutil, subprocess
@@ -882,7 +884,7 @@ class Chasm:
         origin_weight_val  = None
         custom_metric_field= None
 
-        dest_weights = ['g_in_exist', 'g_ou_exist', 'g_int_ns', 'g_ou_ns']
+        dest_weights = ['g_in_exist', 'g_ou_exist', 'g_in_ns', 'g_ou_ns']
 
         if isinstance(sdna_ui_params, dict):
             metric_val_str  = (sdna_ui_params.get("metric") or "ANGULAR").strip().upper()
@@ -909,9 +911,9 @@ class Chasm:
 
         # Nomes finais para BTA no layer de saída
         dst_map = {
-            (dest_weights[0] or 'g_in_exist'): 'bta_int_exist',
+            (dest_weights[0] or 'g_in_exist'): 'bta_in_exist',
             (dest_weights[1] or 'g_ou_exist'): 'bta_out_exist',
-            (dest_weights[2] or 'g_int_ns')  : 'bta_int_ns',
+            (dest_weights[2] or 'g_in_ns')  : 'bta_in_ns',
             (dest_weights[3] or 'g_ou_ns')   : 'bta_out_ns'
         }
         run_order = [dw for dw in dest_weights if dw]
@@ -1286,21 +1288,21 @@ class Chasm:
                 Qgis.Success
             )
 
-            # Campo BTA (aceita saída MAD ou BTA do sDNA)
-            mad_field = None
+            # Campo BTA na saída do sDNA
+            bta_field = None
             for f in out_lyr.fields():
                 upper = f.name().upper()
-                if upper.startswith('MAD') or upper.startswith('BTA'):
-                    mad_field = f.name(); break
-            if not mad_field:
-                raise RuntimeError(f"Campo BTA/MAD* não encontrado na saída do sDNA para DW '{dw}'.")
+                if upper.startswith('BTA'):
+                    bta_field = f.name(); break
+            if not bta_field:
+                raise RuntimeError(f"Campo BTA* não encontrado na saída do sDNA para DW '{dw}'.")
 
             # 2b — JOIN BTA (equals -> fallback intersects)
             try:
                 joined = pr.run("native:joinattributesbylocation", {
                     "INPUT": current, "JOIN": out_lyr,
                     "PREDICATE": [5],  # equals
-                    "JOIN_FIELDS": [mad_field],
+                    "JOIN_FIELDS": [bta_field],
                     "METHOD": 0, "DISCARD_NONMATCHING": False,
                     "PREFIX": "", "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
@@ -1308,35 +1310,36 @@ class Chasm:
                 joined = pr.run("native:joinattributesbylocation", {
                     "INPUT": current, "JOIN": out_lyr,
                     "PREDICATE": [0],  # intersects
-                    "JOIN_FIELDS": [mad_field],
+                    "JOIN_FIELDS": [bta_field],
                     "METHOD": 0, "DISCARD_NONMATCHING": False,
                     "PREFIX": "", "OUTPUT": "TEMPORARY_OUTPUT"
                 })["OUTPUT"]
 
             target_name = {
-                (dest_weights[0] or 'g_in_exist'): 'bta_int_exist',
+                (dest_weights[0] or 'g_in_exist'): 'bta_in_exist',
                 (dest_weights[1] or 'g_ou_exist'): 'bta_out_exist',
-                (dest_weights[2] or 'g_int_ns')  : 'bta_int_ns',
+                (dest_weights[2] or 'g_in_ns')  : 'bta_in_ns',
                 (dest_weights[3] or 'g_ou_ns')   : 'bta_out_ns'
             }.get(dw_orig, f"bta_{dw_orig}".replace(" ", "_").lower()[:30])
 
             with_new = pr.run("native:fieldcalculator", {
                 "INPUT": joined, "FIELD_NAME": target_name,
                 "FIELD_TYPE": 0, "FIELD_LENGTH": 20, "FIELD_PRECISION": 6,
-                "FORMULA": f"\"{mad_field}\"", "OUTPUT": "TEMPORARY_OUTPUT"
+                "FORMULA": f"\"{bta_field}\"", "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
+            # Remove o campo original BTA após copiar para o destino.
             cleaned = pr.run("native:deletecolumn", {
-                "INPUT": with_new, "COLUMN": [mad_field], "OUTPUT": "TEMPORARY_OUTPUT"
+                "INPUT": with_new, "COLUMN": [bta_field], "OUTPUT": "TEMPORARY_OUTPUT"
             })["OUTPUT"]
 
             current = cleaned
-            results_info.append((dw, out_lyr.name(), mad_field, target_name))
+            results_info.append((dw, out_lyr.name(), bta_field, target_name))
             self._log(f"Etapa 2b: JOIN BTA concluído (DW='{dw}')", Qgis.Success)
 
         current.setName(f"{base_line_layer.name()}_with_BTA")
         QgsProject.instance().addMapLayer(current)
-        for dw, out_name, mad_src, mad_dst in results_info:
-            self._log(f"JOIN BTA resumo: DW={dw} saída='{out_name}' {mad_src} -> {mad_dst}", Qgis.Info)
+        for dw, out_name, bta_src, bta_dst in results_info:
+            self._log(f"JOIN BTA resumo: DW={dw} saída='{out_name}' {bta_src} -> {bta_dst}", Qgis.Info)
 
         try:
             self._compute_bta_metrics(current)

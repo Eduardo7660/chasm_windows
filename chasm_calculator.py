@@ -415,16 +415,6 @@ class Chasm:
             with_concat.changeAttributeValue(f.id(), cmax_idx, max_len_sector)
             total_updates += 1
 
-            if (i % log_every) == 0 or log_every == 1:
-                lsid = f[lsid_idx] if lsid_idx >= 0 else ""
-                self._log(
-                    (f"[Etapa1/seg] id={f.id()} line_sector_id='{lsid}' setor='{sid_key}' "
-                     f"len={l:.3f} max_setor={max_len_sector:.3f} sum_len={total_len:.3f} frac={frac:.6f} "
-                     f"GI_tot={gi_total} GO_tot={go_total} -> "
-                     f"g_in_exist={gi_val} g_ou_exist={go_val} g_in_ns={gi_ns_val} g_ou_ns={go_ns_val}"),
-                    Qgis.Info
-                )
-
         with_concat.commitChanges()
         self._log(
             f"Etapa 1.11: ✓ Atualizados {total_updates} segmentos (featureCount={feat_count}).",
@@ -1351,7 +1341,6 @@ class Chasm:
 
     # ------------------------------ RUN: abre diálogo e liga sinais ------------------------------
     def run(self):
-        self._log("run(): abrindo diálogo...", Qgis.Info)
         if self.dlg is None:
             try:
                 from .chasm_calculator_dialog import ChasmDialog
@@ -1374,7 +1363,6 @@ class Chasm:
         self.dlg.show()
         self.dlg.raise_()
         self.dlg.activateWindow()
-        self._log("run(): diálogo exibido.", Qgis.Info)
 
     # ------------------------------ Botão OK/Final (MESMO pipeline do teste) ------------------------------
     def do_final_from_dialog(self):
@@ -1420,8 +1408,6 @@ class Chasm:
                 self._msg(f"A camada de polígonos '{poly_layer.name()}' não possui campos.", Qgis.Critical, 10)
                 return
 
-            self._log(f"OK/Final: usando line='{line_layer.name()}', poly='{poly_layer.name()}', id='{poly_id_field}'", Qgis.Info)
-
             # 3) GI/GO
             poly_names = [f.name() for f in poly_layer.fields()]
             gi_candidates = ["grupo_interesse", "g_interesse", "gi", "GRUPO_INTERESSE", "GI"]
@@ -1440,6 +1426,19 @@ class Chasm:
                 self._log(f"OK/Final: campos GI/GO ausentes: {', '.join(missing)} (serão pulados).", Qgis.Warning, True)
                 self._msg(f"Aviso: campos ausentes: {', '.join(missing)}. Pulando distribuição para eles.", Qgis.Warning, 8)
 
+            sdna_params = None
+            try:
+                sdna_params = self.dlg.sdna_params()
+            except Exception:
+                sdna_params = None
+
+            self._log(
+                "OK/Final: parâmetros do diálogo -> "
+                f"line='{line_layer.name()}', poly='{poly_layer.name()}', id='{poly_id_field}', "
+                f"GI='{gi_field}', GO='{go_field}', sdna_params={sdna_params if sdna_params is not None else '{}'}",
+                Qgis.Info
+            )
+
             # 4) ETAPA 1
             self._log("OK/Final: chamando fragment_lines_by_polygons(...) (Etapa 1)", Qgis.Info)
             out = self.fragment_lines_by_polygons(
@@ -1454,12 +1453,6 @@ class Chasm:
             self._msg("Etapa 1 concluída.", Qgis.Success, 5)
 
             # 5) ETAPA 2 (lê parâmetros da UI)
-            sdna_params = None
-            try:
-                sdna_params = self.dlg.sdna_params()
-            except Exception:
-                pass
-
             self._log("OK/Final: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info, True)
             enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
             self._log(
@@ -1502,8 +1495,8 @@ class Chasm:
         gi_field = pick(gi_candidates) or "grupo_interesse"
         go_field = pick(go_candidates) or "grupo_outros"
         missing = []
-        if gi_field not in poly_names: missing.append(gi_field)
-        if go_field not in poly_names: missing.append(go_field)
+        if gi_field not in poly_names: missing.append(0, gi_field)
+        if go_field not in poly_names: missing.append(0, go_field)
         if missing:
             self._log(f"TESTE: campos GI/GO ausentes: {', '.join(missing)} (serão pulados).", Qgis.Warning, True)
             self._msg(

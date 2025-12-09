@@ -7,7 +7,7 @@ from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMessageBox, QDialogButtonBox
 from qgis.core import (
     QgsVectorLayer, QgsProject, QgsMessageLog, Qgis, QgsWkbTypes, QgsApplication,
-    QgsField
+    QgsField, QgsTask
 )
 
 # resources é leve; se faltar, não derruba a classe
@@ -883,6 +883,8 @@ class Chasm:
             except Exception:
                 radius_val = 1600
             radius_mode_str = (sdna_ui_params.get("radius_mode") or "band").strip().lower()
+            if radius_mode_str == "radius":  # compat: diálogo retorna "radius" para continuous
+                radius_mode_str = "continuous"
             bet_val         = bool(sdna_ui_params.get("betweenness", False))
             bet_bi_val      = bool(sdna_ui_params.get("betw_bidirectional", False))
 
@@ -917,6 +919,41 @@ class Chasm:
 
         current = base_line_layer
         results_info = []
+        task_manager = QgsApplication.taskManager()
+
+        def _run_sdna_cli_task(dw_label: str, cmd: list):
+            """
+            Executa a CLI do sDNA em background via QgsTask e espera o término.
+            Retorna dict com code/stdout/stderr.
+            """
+            loop = QEventLoop()
+            holder = {"result": None, "exception": None}
+
+            def _task_fn(task, cmd=cmd):
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout_t, stderr_t = proc.communicate()
+                return {
+                    "code": proc.returncode,
+                    "stdout": stdout_t,
+                    "stderr": stderr_t,
+                }
+
+            def _finished(exception, result=None):
+                holder["exception"] = exception
+                holder["result"] = result
+                loop.quit()
+
+            task = QgsTask.fromFunction(
+                f"sDNA ({dw_label})", _task_fn, on_finished=_finished, flags=QgsTask.CanCancel
+            )
+            if not task:
+                raise RuntimeError("Falha ao criar task para executar o sDNA.")
+            task_manager.addTask(task)
+            loop.exec()
+
+            if holder["exception"]:
+                raise holder["exception"]
+            return holder.get("result") or {}
 
         # sanitizador de basename curto
         def _sanitize_basename(name: str, maxlen: int = 24) -> str:
@@ -1143,16 +1180,11 @@ class Chasm:
                     opts.append(("custommetric", custom_metric_field))
                 return opts
 
-            def _run_sdna_cli(include_bet=True):
+            def _build_cli(include_bet=True):
                 opts = _build_opts(include_bet=include_bet)
                 param_str = ";".join(f"{k}={v}" for k, v in opts if v not in (None, ""))
                 cmd = [sdna_exe, "-i", in_shp, "-o", out_shp, param_str]
-                suffix = ""
-                if bet_val and not include_bet:
-                    suffix = " (sem betweenness)"
-                self._log(f"Etapa 2a: executando CLI{suffix}: {' '.join(cmd)}", Qgis.Info)
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                return proc, param_str, cmd
+                return cmd, param_str
 
             return {
                 "dw": dw_field,
@@ -1160,11 +1192,11 @@ class Chasm:
                 "tmp_dir": tmp_dir,
                 "out_shp": out_shp,
                 "base_no_ext": base_no_ext,
-                "run_cli": _run_sdna_cli,
+                "build_cli": _build_cli,
             }
 
 
-        # ===== Loop por DWs: executa CLIs em paralelo, depois faz JOIN sequencial =====
+        # ===== Loop por DWs: agenda tasks do sDNA e faz JOIN sequencial =====
         pending = []
         for dw in run_order:
             info = _prepare_sdna_once(dw)
@@ -1172,26 +1204,23 @@ class Chasm:
                 continue
             info["orig_dw"] = dw
 
-            proc, param_str, cmd = info["run_cli"](include_bet=True)
-            info["proc"] = proc
+            cmd, param_str = info["build_cli"](include_bet=True)
             info["param_str"] = param_str
             info["cmd"] = cmd
-            info["bet_retry_used"] = False
             pending.append(info)
-            self._log(f"Etapa 2a: CLI lançado (DW='{dw}') -> {' '.join(cmd)}", Qgis.Info)
+            self._log(f"Etapa 2a: task agendada (DW='{dw}') -> {' '.join(cmd)}", Qgis.Info)
 
         for info in pending:
             dw = info.get("dw")
             dw_orig = info.get("orig_dw", dw)
-            proc = info["proc"]
-            stdout_t, stderr_t = proc.communicate()
-            self._yield_ui()
-            stdout_t = (stdout_t or "").strip()
-            stderr_t = (stderr_t or "").strip()
+            res = _run_sdna_cli_task(dw_orig, info["cmd"])
+            stdout_t = (res.get("stdout") or "").strip()
+            stderr_t = (res.get("stderr") or "").strip()
+            return_code = res.get("code", 0)
 
-            if proc.returncode != 0:
+            if return_code != 0:
                 raise RuntimeError(
-                    f"sDNA (DW '{dw}') retornou código {proc.returncode}. "
+                    f"sDNA (DW '{dw}') retornou código {return_code}. "
                     f"STDOUT: {stdout_t} STDERR: {stderr_t}"
                 )
 

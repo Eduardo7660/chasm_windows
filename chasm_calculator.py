@@ -54,6 +54,7 @@ class Chasm:
         self.dlg = None  # será importado e criado no run()
         self._sdna_integral_alg_id = None
         self._ok_running = False  # evita rodar duas vezes no OK
+        self._keep_alive = []  # mantém referências a camadas temporárias vivas
 
     def tr(self, message):
         return QCoreApplication.translate('Chasm', message)
@@ -467,6 +468,89 @@ class Chasm:
             pass
 
         return with_concat
+
+    def _merge_with_outside_segments(self, fragmented_layer, line_layer, poly_layer, poly_id_field):
+        """
+        Antes do sDNA: dissolve setores, calcula diferença (linhas fora dos setores)
+        e mescla com o resultado já fragmentado.
+        """
+        import processing as pr
+
+        if fragmented_layer is None or line_layer is None or poly_layer is None:
+            raise RuntimeError("Camadas inválidas para merge com segmentos externos.")
+
+        if not getattr(poly_layer, "isValid", lambda: False)():
+            raise RuntimeError("Camada de polígonos inválida (pré-dissolve).")
+
+        self._log("Pré-sDNA: 1) dissolvendo polígonos por setor...", Qgis.Info)
+        poly_input = poly_layer
+        if poly_layer.crs() != line_layer.crs():
+            poly_input = pr.run("native:reprojectlayer", {
+                "INPUT": poly_layer,
+                "TARGET_CRS": line_layer.crs(),
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
+
+        # dissolve completo (sem campo) para gerar a máscara única dos setores
+        dissolved = pr.run("native:dissolve", {
+            "INPUT": poly_input,
+            "FIELD": [],
+            "OUTPUT": "TEMPORARY_OUTPUT"
+        })["OUTPUT"]
+        if dissolved is None or not getattr(dissolved, "isValid", lambda: False)():
+            raise RuntimeError("Falha ao gerar camada dissolvida (native:dissolve retornou inválido).")
+        try:
+            self._keep_alive.append(dissolved)
+        except Exception:
+            pass
+        try:
+            dissolved.setName(f"{poly_layer.name()}_dissolved")
+            QgsProject.instance().addMapLayer(dissolved)
+            self._log(f"Pré-sDNA: camada adicionada '{dissolved.name()}'", Qgis.Info)
+        except Exception:
+            pass
+
+        self._log("Pré-sDNA: 2) diferença das linhas com os setores dissolvidos...", Qgis.Info)
+        diff = pr.run("native:difference", {
+            "INPUT": line_layer,
+            "OVERLAY": dissolved,
+            "OUTPUT": "TEMPORARY_OUTPUT"
+        })["OUTPUT"]
+        if diff is None or not getattr(diff, "isValid", lambda: False)():
+            raise RuntimeError("Falha ao gerar camada de diferença (linhas fora dos setores).")
+        try:
+            self._keep_alive.append(diff)
+        except Exception:
+            pass
+        try:
+            diff = pr.run("native:extractbyexpression", {
+                "INPUT": diff,
+                "EXPRESSION": "geometry(@feature) IS NOT NULL AND $length > 0",
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
+        except Exception:
+            pass
+        try:
+            diff.setName(f"{line_layer.name()}_outside_{poly_layer.name()}")
+            QgsProject.instance().addMapLayer(diff)
+            self._log(f"Pré-sDNA: camada de linhas distintas adicionada '{diff.name()}'", Qgis.Info)
+        except Exception:
+            pass
+
+        self._log("Pré-sDNA: 3) unindo fragmentos internos com segmentos externos...", Qgis.Info)
+        merged = pr.run("native:mergevectorlayers", {
+            "LAYERS": [fragmented_layer, diff],
+            "CRS": fragmented_layer.crs(),
+            "OUTPUT": "TEMPORARY_OUTPUT"
+        })["OUTPUT"]
+        try:
+            self._keep_alive.append(merged)
+        except Exception:
+            pass
+        merged.setName(f"{fragmented_layer.name()}_with_outside")
+        QgsProject.instance().addMapLayer(merged)
+        self._log(f"Pré-sDNA: camada mesclada adicionada '{merged.name()}'", Qgis.Success)
+        return merged
 
     def _resolve_sdna_param_keys(self, alg_id):
         """
@@ -917,43 +1001,73 @@ class Chasm:
             Qgis.Info, True
         )
 
-        current = base_line_layer
+        # mantém cópia estável da camada base para evitar invalidação de objetos temporários
+        try:
+            current = pr.run("native:savefeatures", {
+                "INPUT": base_line_layer,
+                "OUTPUT": "TEMPORARY_OUTPUT"
+            })["OUTPUT"]
+            try:
+                self._keep_alive.append(current)
+            except Exception:
+                pass
+        except Exception:
+            current = base_line_layer
+        if current is None or not getattr(current, "isValid", lambda: False)():
+            current = base_line_layer
+        if current is None or not getattr(current, "isValid", lambda: False)():
+            raise RuntimeError("Camada base para sDNA está inválida (após cópia).")
         results_info = []
         task_manager = QgsApplication.taskManager()
 
-        def _run_sdna_cli_task(dw_label: str, cmd: list):
+        def _run_sdna_cli_tasks(task_infos):
             """
-            Executa a CLI do sDNA em background via QgsTask e espera o término.
-            Retorna dict com code/stdout/stderr.
+            Dispara todos os sDNA CLI em paralelo via QgsTask e espera todos terminarem.
+            Retorna dict label->resultado (code/stdout/stderr).
             """
             loop = QEventLoop()
-            holder = {"result": None, "exception": None}
+            holder = {"results": {}, "errors": []}
+            remaining = len(task_infos)
 
-            def _task_fn(task, cmd=cmd):
+            def _task_fn(task, cmd):
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 stdout_t, stderr_t = proc.communicate()
-                return {
-                    "code": proc.returncode,
-                    "stdout": stdout_t,
-                    "stderr": stderr_t,
-                }
+                return {"code": proc.returncode, "stdout": stdout_t, "stderr": stderr_t}
 
-            def _finished(exception, result=None):
-                holder["exception"] = exception
-                holder["result"] = result
-                loop.quit()
+            def _make_finished(label):
+                def _finished(exception, result=None):
+                    nonlocal remaining
+                    if exception:
+                        holder["errors"].append((label, exception))
+                    else:
+                        holder["results"][label] = result or {}
+                    remaining -= 1
+                    if remaining <= 0:
+                        loop.quit()
+                return _finished
 
-            task = QgsTask.fromFunction(
-                f"sDNA ({dw_label})", _task_fn, on_finished=_finished, flags=QgsTask.CanCancel
-            )
-            if not task:
-                raise RuntimeError("Falha ao criar task para executar o sDNA.")
-            task_manager.addTask(task)
-            loop.exec()
+            for info in task_infos:
+                label = info.get("orig_dw") or info.get("dw") or "dw"
+                cmd = info["cmd"]
+                task = QgsTask.fromFunction(
+                    f"sDNA ({label})",
+                    _task_fn,
+                    on_finished=_make_finished(label),
+                    flags=QgsTask.CanCancel,
+                    cmd=cmd,
+                )
+                if not task:
+                    raise RuntimeError("Falha ao criar task para executar o sDNA.")
+                task_manager.addTask(task)
 
-            if holder["exception"]:
-                raise holder["exception"]
-            return holder.get("result") or {}
+            if remaining > 0:
+                loop.exec()
+
+            if holder["errors"]:
+                lbl, exc = holder["errors"][0]
+                raise RuntimeError(f"sDNA (DW '{lbl}') falhou: {exc}")
+
+            return holder["results"]
 
         # sanitizador de basename curto
         def _sanitize_basename(name: str, maxlen: int = 24) -> str:
@@ -1210,10 +1324,14 @@ class Chasm:
             pending.append(info)
             self._log(f"Etapa 2a: task agendada (DW='{dw}') -> {' '.join(cmd)}", Qgis.Info)
 
+        results_by_label = _run_sdna_cli_tasks(pending)
+
         for info in pending:
             dw = info.get("dw")
             dw_orig = info.get("orig_dw", dw)
-            res = _run_sdna_cli_task(dw_orig, info["cmd"])
+            if dw_orig not in results_by_label:
+                raise RuntimeError(f"sDNA (DW '{dw_orig}') não retornou resultado (task abortada?).")
+            res = results_by_label.get(dw_orig, {})
             stdout_t = (res.get("stdout") or "").strip()
             stderr_t = (res.get("stderr") or "").strip()
             return_code = res.get("code", 0)
@@ -1352,6 +1470,10 @@ class Chasm:
             })["OUTPUT"]
 
             current = cleaned
+            try:
+                self._keep_alive.append(current)
+            except Exception:
+                pass
             results_info.append((dw, out_lyr.name(), bta_field, target_name))
             self._log(f"Etapa 2b: JOIN BTA concluído (DW='{dw}')", Qgis.Success)
 
@@ -1429,6 +1551,7 @@ class Chasm:
                 return
 
             # 2) Campo ID
+            poly_layer_name = poly_layer.name()
             poly_id_field = getattr(self.dlg, "selected_polygon_id_field", lambda: None)()
             if not poly_id_field:
                 poly_id_field = self._auto_pick_polygon_id_field(poly_layer)
@@ -1481,9 +1604,37 @@ class Chasm:
             self._log(f"OK/Final: Etapa 1 concluída -> '{out.name()}' ({out.featureCount()} feições)", Qgis.Success, True)
             self._msg("Etapa 1 concluída.", Qgis.Success, 5)
 
-            # 5) ETAPA 2 (lê parâmetros da UI)
+            # 5) ETAPA 1.x (dissolve + diferença + merge)
+            poly_for_merge = None
+            try:
+                found = QgsProject.instance().mapLayersByName(poly_layer_name)
+                if found:
+                    poly_for_merge = found[0]
+            except Exception:
+                pass
+            if poly_for_merge is None:
+                try:
+                    if poly_layer is not None and poly_layer.isValid():
+                        poly_for_merge = poly_layer
+                except Exception:
+                    pass
+            if poly_for_merge is None:
+                raise RuntimeError("Camada de polígonos ficou indisponível após a Etapa 1.")
+
+            merged_for_sdna = self._merge_with_outside_segments(
+                fragmented_layer=out,
+                line_layer=line_layer,
+                poly_layer=poly_for_merge,
+                poly_id_field=poly_id_field
+            )
+            self._log(
+                f"OK/Final: Pré-sDNA concluído -> '{merged_for_sdna.name()}' ({merged_for_sdna.featureCount()} feições)",
+                Qgis.Success, True
+            )
+
+            # 6) ETAPA 2 (lê parâmetros da UI)
             self._log("OK/Final: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info, True)
-            enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
+            enriched = self._sdna_integral_and_join_mad(merged_for_sdna, sdna_ui_params=sdna_params)
             self._log(
                 f"OK/Final: Etapa 2 concluída -> '{enriched.name()}' com campos BTA.",
                 Qgis.Success, True
@@ -1506,6 +1657,7 @@ class Chasm:
             self._msg("Selecione no painel ao menos 1 camada de LINHAS e 1 de POLÍGONOS e tente novamente.", Qgis.Warning, 8)
             return
 
+        poly_layer_name = poly_layer.name()
         poly_id_field = self._auto_pick_polygon_id_field(poly_layer)
         if not poly_id_field:
             self._log(f"TESTE: a camada '{poly_layer.name()}' não possui campos.", Qgis.Critical, True)
@@ -1524,8 +1676,8 @@ class Chasm:
         gi_field = pick(gi_candidates) or "grupo_interesse"
         go_field = pick(go_candidates) or "grupo_outros"
         missing = []
-        if gi_field not in poly_names: missing.append(0, gi_field)
-        if go_field not in poly_names: missing.append(0, go_field)
+        if gi_field not in poly_names: missing.append(gi_field)
+        if go_field not in poly_names: missing.append(go_field)
         if missing:
             self._log(f"TESTE: campos GI/GO ausentes: {', '.join(missing)} (serão pulados).", Qgis.Warning, True)
             self._msg(
@@ -1546,6 +1698,33 @@ class Chasm:
             )
             self._log(f"TESTE: Etapa 1 concluída -> '{out.name()}' ({out.featureCount()} feições)", Qgis.Success, True)
 
+            poly_for_merge = None
+            try:
+                found = QgsProject.instance().mapLayersByName(poly_layer_name)
+                if found:
+                    poly_for_merge = found[0]
+            except Exception:
+                pass
+            if poly_for_merge is None:
+                try:
+                    if poly_layer is not None and poly_layer.isValid():
+                        poly_for_merge = poly_layer
+                except Exception:
+                    pass
+            if poly_for_merge is None:
+                raise RuntimeError("Camada de polígonos ficou indisponível após a Etapa 1.")
+
+            merged_for_sdna = self._merge_with_outside_segments(
+                fragmented_layer=out,
+                line_layer=line_layer,
+                poly_layer=poly_for_merge,
+                poly_id_field=poly_id_field
+            )
+            self._log(
+                f"TESTE: Pré-sDNA concluído -> '{merged_for_sdna.name()}' ({merged_for_sdna.featureCount()} feições)",
+                Qgis.Success, True
+            )
+
             # parâmetros da UI (se diálogo estiver aberto)
             sdna_params = None
             try:
@@ -1555,7 +1734,7 @@ class Chasm:
                 pass
 
             self._log("TESTE: iniciando Etapa 2 (sDNA + JOIN BTA)...", Qgis.Info)
-            enriched = self._sdna_integral_and_join_mad(out, sdna_ui_params=sdna_params)
+            enriched = self._sdna_integral_and_join_mad(merged_for_sdna, sdna_ui_params=sdna_params)
             self._log(
                 f"TESTE: Etapa 2 concluída -> '{enriched.name()}' com BTAs.",
                 Qgis.Success, True

@@ -1,0 +1,52 @@
+# 🧩 INSTALAÇÃO MANUAL COMPLETA DO sDNA+ PARA QGIS
+
+# 1️⃣ Atualiza pacotes do sistema
+sudo apt update
+
+# 2️⃣ Instala dependências do Python (caso ainda não tenha)
+sudo apt install -y python3-full python3-pip
+
+# 3️⃣ Instala o sDNA-plus GLOBALMENTE (substitui o antigo sdna-open)
+sudo python3 -m pip install sDNA-plus --break-system-packages
+
+# 4️⃣ Confirma a instalação
+python3 -m pip show sDNA-plus | grep Location
+# -> Deve mostrar algo como: /usr/local/lib/python3.12/dist-packages
+
+# 5️⃣ Confirma que os executáveis foram criados
+which sdnaintegral
+# -> Deve retornar /usr/local/bin/sdnaintegral
+
+# 6️⃣ (Opcional) Testa se está funcionando
+sdnaintegral --help
+# -> Deve exibir as opções do sDNA Integral (Usage: sdnaintegral [options] ...)
+
+# 7️⃣ Abre o QGIS
+#    Vai em:
+#    Settings → Options → Providers → Spatial Design Network Analysis
+#    e marca “Activate sDNA provider”.
+
+# 8️⃣ No campo “sDNA installation folder”, cola o caminho exibido no passo 4:
+#    Exemplo:
+#    /usr/local/lib/python3.12/dist-packages
+
+# 9️⃣ Clica “Apply” e depois “OK”.
+
+# 🔁 10️⃣ Reinicia completamente o QGIS.
+
+# 11️⃣ Abre o log:
+#     View → Panels → Log Messages Panel → aba Processing
+#     Deve aparecer:
+#     sDNA root: /usr/local/lib/python3.12/dist-packages
+#     sDNA provider loaded successfully
+
+# 12️⃣ Agora abre:
+#     Processing → Toolbox
+#     e procura por “sDNA”.
+#     Deve surgir o grupo:
+#       Spatial Design Network Analysis (sDNA)
+#       com as ferramentas:
+#         - sDNA Prepare Network
+#         - sDNA Integral
+#         - sDNA Learn
+#         - sDNA Predict

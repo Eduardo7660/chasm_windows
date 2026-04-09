@@ -929,6 +929,7 @@ class Chasm:
         Exporta sempre para SHP físico, aguarda escrita estabilizar e usa nomes curtos.
         """
         import os, uuid, time, re, tempfile, shutil, subprocess
+        from pathlib import Path
         import processing as pr
         from qgis.core import (
             Qgis, QgsProject, QgsApplication, QgsVectorLayer,
@@ -939,12 +940,26 @@ class Chasm:
         self._log("Etapa 2: iniciando sDNA (2a) + JOIN BTA (2b)...", Qgis.Info, True)
 
         # Binário externo do sDNA (fora do ambiente do QGIS)
-        sdna_bin = os.environ.get("CHASM_SDNA_BIN", "sdnaintegral")
-        sdna_exe = shutil.which(sdna_bin)
+        sdna_env = os.environ.get("CHASM_SDNA_BIN")
+        sdna_bin = sdna_env or "sdnaintegral"
+
+        user_scripts = Path.home() / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / "sdnaintegral.exe"
+
+        # Prioridade:
+        # 1) CHASM_SDNA_BIN (se definido)
+        # 2) exe instalado no Scripts do usuário
+        # 3) PATH normal
+        if sdna_env:
+            sdna_exe = shutil.which(sdna_bin) or sdna_bin  # se veio caminho absoluto, mantém
+        elif user_scripts.exists():
+            sdna_exe = str(user_scripts)
+        else:
+            sdna_exe = shutil.which(sdna_bin)
+
         if not sdna_exe:
             raise RuntimeError(
-                f"Binário sDNA '{sdna_bin}' não encontrado no PATH. "
-                "Ajuste o PATH ou defina a variável de ambiente CHASM_SDNA_BIN."
+                f"Binário sDNA '{sdna_bin}' não encontrado. "
+                "Instale sDNA-plus no Python do QGIS ou defina CHASM_SDNA_BIN apontando para 'sdnaintegral.exe'."
             )
         self._log(f"Etapa 2a: usando sDNA externo '{sdna_exe}'", Qgis.Info)
 
@@ -1337,9 +1352,12 @@ class Chasm:
             return_code = res.get("code", 0)
 
             if return_code != 0:
+                hint = ""
+                if "No module named 'sDNA.bin'" in stderr_t:
+                    hint = " (instale sDNA-plus no Python do QGIS ou aponte CHASM_SDNA_BIN para um sdnaintegral.exe funcional)"
                 raise RuntimeError(
                     f"sDNA (DW '{dw}') retornou código {return_code}. "
-                    f"STDOUT: {stdout_t} STDERR: {stderr_t}"
+                    f"STDOUT: {stdout_t} STDERR: {stderr_t}{hint}"
                 )
 
             if stdout_t:

@@ -1,0 +1,31 @@
+# Script: setup_sdna.ps1
+# Objetivo: instalar sDNA-plus no perfil do usuário, priorizar o binário do usuário
+# e testar o executável para uso pelo plugin Chasm.
+
+$py = 'C:\PROGRA~1\QGIS33~1.8\apps\Python312\python.exe'
+$usrScripts = "$env:APPDATA\Python\Python312\Scripts"
+$sdnaExe = Join-Path $usrScripts 'sdnaintegral.exe'
+
+Write-Host "1) Instalando sDNA-plus no perfil do usuário..." -ForegroundColor Cyan
+& $py -m pip install --user --force-reinstall --ignore-installed --no-deps --no-warn-script-location sDNA-plus
+
+Write-Host "2) Garantindo pasta Scripts do usuário..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force $usrScripts | Out-Null
+
+Write-Host "3) Se o exe não veio pelo pip, copiando do global..." -ForegroundColor Cyan
+if (-not (Test-Path $sdnaExe) -and (Test-Path 'C:\Program Files\QGIS 3.34.8\apps\Python312\Scripts\sdnaintegral.exe')) {
+    Copy-Item 'C:\Program Files\QGIS 3.34.8\apps\Python312\Scripts\sdnaintegral.exe' $sdnaExe -Force
+}
+
+if (-not (Test-Path $sdnaExe)) {
+    Write-Error "sdnaintegral.exe ainda não existe em $sdnaExe. Verifique a instalação."
+    exit 1
+}
+
+Write-Host "4) Definindo CHASM_SDNA_BIN (escopo do usuário)..." -ForegroundColor Cyan
+[Environment]::SetEnvironmentVariable('CHASM_SDNA_BIN', $sdnaExe, 'User')
+
+Write-Host "5) Testando o binário..." -ForegroundColor Cyan
+& $sdnaExe -h | Select-Object -First 5
+
+Write-Host "Pronto. Reabra o QGIS e rode o Chasm; ele deve logar o caminho do exe acima."

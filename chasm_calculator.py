@@ -942,24 +942,42 @@ class Chasm:
 
         # Binário externo do sDNA (fora do ambiente do QGIS)
         sdna_env = os.environ.get("CHASM_SDNA_BIN")
-        sdna_bin = sdna_env or "sdnaintegral"
-
         user_scripts = Path.home() / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / "sdnaintegral.exe"
+        bundled_py37 = Path.home() / "Downloads" / "um_dos_3_stage" / "Python37" / "Scripts" / "sdnaintegral.exe"
 
-        # Prioridade:
-        # 1) CHASM_SDNA_BIN (se definido)
-        # 2) exe instalado no Scripts do usuário
-        # 3) PATH normal
-        if sdna_env:
-            sdna_exe = shutil.which(sdna_bin) or sdna_bin  # se veio caminho absoluto, mantém
-        elif user_scripts.exists():
-            sdna_exe = str(user_scripts)
-        else:
-            sdna_exe = shutil.which(sdna_bin)
+        def _is_pipx_path(candidate):
+            try:
+                lowered = str(candidate).replace("/", "\\").lower()
+            except Exception:
+                lowered = str(candidate).lower()
+            return "\\.local\\pipx\\" in lowered or "\\pipx\\venvs\\" in lowered
+
+        sdna_exe = None
+        candidates = []
+        if bundled_py37.exists():
+            candidates.append(str(bundled_py37))
+        if sdna_env and not _is_pipx_path(sdna_env):
+            candidates.append(sdna_env)
+        if user_scripts.exists():
+            candidates.append(str(user_scripts))
+        if sdna_env and _is_pipx_path(sdna_env):
+            candidates.append(sdna_env)
+        candidates.append("sdnaintegral")
+
+        for candidate in candidates:
+            resolved = shutil.which(candidate) or candidate
+            if resolved and os.path.exists(resolved):
+                sdna_exe = resolved
+                break
+            if candidate == "sdnaintegral":
+                resolved = shutil.which(candidate)
+                if resolved:
+                    sdna_exe = resolved
+                    break
 
         if not sdna_exe:
             raise RuntimeError(
-                f"Binário sDNA '{sdna_bin}' não encontrado. "
+                "Binário sDNA 'sdnaintegral' não encontrado. "
                 "Instale sDNA-plus no Python do QGIS ou defina CHASM_SDNA_BIN apontando para 'sdnaintegral.exe'."
             )
         self._log(f"Etapa 2a: usando sDNA externo '{sdna_exe}'", Qgis.Info)

@@ -1,10 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
 import math
-try:
-    import winreg as _winreg
-except Exception:
-    _winreg = None
 
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, QVariant, QEventLoop
 from qgis.PyQt.QtGui import QIcon
@@ -59,7 +55,6 @@ class Chasm:
         self._sdna_integral_alg_id = None
         self._ok_running = False  # evita rodar duas vezes no OK
         self._keep_alive = []  # mantém referências a camadas temporárias vivas
-        self._gui_initialized = False
 
     def tr(self, message):
         return QCoreApplication.translate('Chasm', message)
@@ -132,83 +127,6 @@ class Chasm:
                 return c
         return names[0] if names else None
 
-    def _get_persisted_user_env(self, name):
-        value = os.environ.get(name)
-        if value:
-            return value
-        if os.name != "nt" or _winreg is None:
-            return None
-        try:
-            with _winreg.OpenKey(_winreg.HKEY_CURRENT_USER, r"Environment") as key:
-                value, _ = _winreg.QueryValueEx(key, name)
-                value = (value or "").strip()
-                return value or None
-        except Exception:
-            return None
-
-    def _resolve_sdna_executable(self):
-        import shutil
-        from pathlib import Path
-
-        sdna_env = self._get_persisted_user_env("CHASM_SDNA_BIN")
-        pipx_exe = Path.home() / ".local" / "bin" / "sdnaintegral.exe"
-        user_scripts = Path.home() / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / "sdnaintegral.exe"
-
-        candidates = []
-        if sdna_env:
-            candidates.append(("CHASM_SDNA_BIN", sdna_env))
-        candidates.append(("pipx", str(pipx_exe)))
-        candidates.append(("PATH", "sdnaintegral"))
-        candidates.append(("user_scripts", str(user_scripts)))
-
-        for source, candidate in candidates:
-            expanded = os.path.expandvars(candidate).strip()
-            if not expanded:
-                continue
-            if any(sep in expanded for sep in ("\\", "/")) or expanded.lower().endswith(".exe"):
-                if os.path.exists(expanded):
-                    return expanded, source
-            else:
-                resolved = shutil.which(expanded)
-                if resolved:
-                    return resolved, source
-        return None, None
-
-    def _plugin_package_name(self):
-        return os.path.basename(self.plugin_dir.rstrip("/\\"))
-
-    def _reload_self_plugin(self):
-        plugin_name = self._plugin_package_name()
-        try:
-            if self.dlg is not None:
-                try:
-                    self.dlg.close()
-                except Exception:
-                    pass
-                self.dlg = None
-
-            import qgis.utils as qgis_utils
-
-            reload_fn = getattr(qgis_utils, "reloadPlugin", None)
-            if callable(reload_fn):
-                self._log(f"Recarregando plugin '{plugin_name}' via qgis.utils.reloadPlugin().", Qgis.Info, True)
-                reload_fn(plugin_name)
-                return
-
-            unload_fn = getattr(qgis_utils, "unloadPlugin", None)
-            load_fn = getattr(qgis_utils, "loadPlugin", None)
-            start_fn = getattr(qgis_utils, "startPlugin", None)
-
-            self._log(f"Recarregando plugin '{plugin_name}' via unload/load/start.", Qgis.Info, True)
-            if callable(unload_fn):
-                unload_fn(plugin_name)
-            if callable(load_fn):
-                load_fn(plugin_name)
-            if callable(start_fn):
-                start_fn(plugin_name)
-        except Exception as e:
-            self._log(f"Falha ao recarregar plugin '{plugin_name}': {e}", Qgis.Critical, True)
-
     # ------------------------------ GUI ------------------------------
     def add_action(self, icon_path, text, callback, enabled_flag=True,
                    add_to_menu=True, add_to_toolbar=True, status_tip=None,
@@ -228,21 +146,12 @@ class Chasm:
         return action
 
     def initGui(self):
-        if self._gui_initialized:
-            self._log("initGui chamado novamente; removendo ações antigas antes de recriar.", Qgis.Warning)
-            self.unload()
-
         icon_path = ':/plugins/chasm_calculator/icon.png'
         self.add_action(icon_path, text=self.tr(u'Chasm Calculator'),
                         callback=self.run, parent=self.iface.mainWindow())
 
         self.add_action(icon_path, text=self.tr(u'Fragmentar Linhas por Polígonos (teste)'),
-                        callback=self.do_fragmentation_test, add_to_toolbar=False,
-                        parent=self.iface.mainWindow())
-
-        self.add_action(icon_path, text=self.tr(u'Recarregar Plugin (dev)'),
-                        callback=self._reload_self_plugin, add_to_toolbar=False,
-                        parent=self.iface.mainWindow())
+                        callback=self.do_fragmentation_test, parent=self.iface.mainWindow())
 
         try:
             import processing
@@ -254,24 +163,11 @@ class Chasm:
 
         # status do sDNA-plus (sdnapy)
         self._log(f"sDNA-plus (sdnapy) disponível? {_SDNA_PY_OK} v={_SDNA_PY_VERSION}", Qgis.Info)
-        self._gui_initialized = True
 
     def unload(self):
-        for action in list(self.actions):
-            try:
-                self.iface.removePluginMenu(self.menu, action)
-            except Exception:
-                pass
-            try:
-                self.iface.removeToolBarIcon(action)
-            except Exception:
-                pass
-            try:
-                action.deleteLater()
-            except Exception:
-                pass
-        self.actions = []
-        self._gui_initialized = False
+        for action in self.actions:
+            self.iface.removePluginMenu(self.tr(u'&Chasm Calculator'), action)
+            self.iface.removeToolBarIcon(action)
         if hasattr(self, "translator"):
             try:
                 QCoreApplication.removeTranslator(self.translator)
@@ -1044,13 +940,28 @@ class Chasm:
         self._log("Etapa 2: iniciando sDNA (2a) + JOIN BTA (2b)...", Qgis.Info, True)
 
         # Binário externo do sDNA (fora do ambiente do QGIS)
-        sdna_exe, sdna_source = self._resolve_sdna_executable()
+        sdna_env = os.environ.get("CHASM_SDNA_BIN")
+        sdna_bin = sdna_env or "sdnaintegral"
+
+        user_scripts = Path.home() / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / "sdnaintegral.exe"
+
+        # Prioridade:
+        # 1) CHASM_SDNA_BIN (se definido)
+        # 2) exe instalado no Scripts do usuário
+        # 3) PATH normal
+        if sdna_env:
+            sdna_exe = shutil.which(sdna_bin) or sdna_bin  # se veio caminho absoluto, mantém
+        elif user_scripts.exists():
+            sdna_exe = str(user_scripts)
+        else:
+            sdna_exe = shutil.which(sdna_bin)
+
         if not sdna_exe:
             raise RuntimeError(
-                "Binário sDNA 'sdnaintegral' não encontrado. "
+                f"Binário sDNA '{sdna_bin}' não encontrado. "
                 "Instale sDNA-plus no Python do QGIS ou defina CHASM_SDNA_BIN apontando para 'sdnaintegral.exe'."
             )
-        self._log(f"Etapa 2a: usando sDNA externo '{sdna_exe}' (origem={sdna_source})", Qgis.Info)
+        self._log(f"Etapa 2a: usando sDNA externo '{sdna_exe}'", Qgis.Info)
 
         # ---- parâmetros vindos da UI (com defaults) ----
         metric_val_str     = "ANGULAR"
@@ -1124,88 +1035,6 @@ class Chasm:
         results_info = []
         task_manager = QgsApplication.taskManager()
 
-        def _augment_sdna_runtime_env(base_env, sdna_cmd):
-            safe_env = dict(base_env)
-            for key in list(safe_env.keys()):
-                if key.startswith("PYTHON") or key in ("PYTHONHOME", "PYTHONPATH", "PYTHONIOENCODING"):
-                    del safe_env[key]
-
-            exe_path = None
-            try:
-                exe_path = Path(sdna_cmd[0]).resolve()
-            except Exception:
-                exe_path = None
-
-            path_parts = []
-            removed_path_parts = []
-
-            def _add_path(candidate):
-                if not candidate:
-                    return
-                try:
-                    c = str(Path(candidate))
-                except Exception:
-                    c = str(candidate)
-                if os.path.isdir(c) and c not in path_parts:
-                    path_parts.append(c)
-
-            def _is_qgis_runtime_path(candidate):
-                if not candidate:
-                    return False
-                try:
-                    raw = str(Path(candidate))
-                except Exception:
-                    raw = str(candidate)
-                lowered = raw.replace("/", "\\").lower()
-                return (
-                    "\\qgis " in lowered or
-                    "\\qgis\\" in lowered or
-                    "\\apps\\qgis" in lowered or
-                    "\\osgeo4w" in lowered
-                )
-
-            # Permite forçar a pasta das DLLs nativas via ambiente do usuario.
-            _add_path(base_env.get("CHASM_SDNA_DLL_DIR"))
-
-            if exe_path is not None:
-                _add_path(exe_path.parent)
-
-                # Instalação --user: ...\Python312\Scripts\sdnaintegral.exe
-                try:
-                    _add_path(exe_path.parent.parent / "site-packages" / "sDNA" / "x64")
-                except Exception:
-                    pass
-
-                # Python tradicional/venv: ...\Scripts\sdnaintegral.exe
-                try:
-                    _add_path(exe_path.parent.parent / "Lib" / "site-packages" / "sDNA" / "x64")
-                except Exception:
-                    pass
-
-            try:
-                _add_path(Path.home() / "AppData" / "Roaming" / "Python" / "Python312" / "site-packages" / "sDNA" / "x64")
-            except Exception:
-                pass
-
-            current_path_items = []
-            for item in (safe_env.get("PATH", "") or "").split(os.pathsep):
-                item = (item or "").strip()
-                if not item:
-                    continue
-                if _is_qgis_runtime_path(item):
-                    removed_path_parts.append(item)
-                    continue
-                if item not in current_path_items:
-                    current_path_items.append(item)
-
-            if path_parts or current_path_items:
-                safe_env["PATH"] = os.pathsep.join(path_parts + current_path_items)
-                self._log(f"sDNA PATH extra: {path_parts}", Qgis.Info)
-            if removed_path_parts:
-                self._log(f"sDNA PATH removido (QGIS/OSGeo4W): {removed_path_parts}", Qgis.Info)
-
-            return safe_env
-
         def _run_sdna_cli_tasks(task_infos):
             """
             Dispara todos os sDNA CLI em paralelo via QgsTask e espera todos terminarem.
@@ -1215,27 +1044,10 @@ class Chasm:
             holder = {"results": {}, "errors": []}
             remaining = len(task_infos)
 
-            def _task_fn(task, cmd, run_meta=None):
-                # Isola o ambiente para evitar conflito com Python do QGIS,
-                # mas preserva/acrescenta pastas de DLL nativas do sDNA.
-                safe_env = _augment_sdna_runtime_env(os.environ.copy(), cmd)
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    errors="replace",
-                    env=safe_env,
-                    cwd=(run_meta or {}).get("tmp_dir") or None,
-                    creationflags=0x08000000 if os.name == 'nt' else 0
-                )
+            def _task_fn(task, cmd):
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 stdout_t, stderr_t = proc.communicate()
-                return {
-                    "code": proc.returncode,
-                    "stdout": stdout_t,
-                    "stderr": stderr_t,
-                    "meta": run_meta or {},
-                }
+                return {"code": proc.returncode, "stdout": stdout_t, "stderr": stderr_t}
 
             def _make_finished(label):
                 def _finished(exception, result=None):
@@ -1258,14 +1070,6 @@ class Chasm:
                     on_finished=_make_finished(label),
                     flags=QgsTask.CanCancel,
                     cmd=cmd,
-                    run_meta={
-                        "tmp_dir": info.get("tmp_dir"),
-                        "in_shp": info.get("in_shp"),
-                        "out_shp": info.get("out_shp"),
-                        "param_str": info.get("param_str"),
-                        "dw": info.get("dw"),
-                        "orig_dw": info.get("orig_dw"),
-                    },
                 )
                 if not task:
                     raise RuntimeError("Falha ao criar task para executar o sDNA.")
@@ -1515,7 +1319,6 @@ class Chasm:
                 "dw": dw_field,
                 "orig_dw": dw_field,
                 "tmp_dir": tmp_dir,
-                "in_shp": in_shp,
                 "out_shp": out_shp,
                 "base_no_ext": base_no_ext,
                 "build_cli": _build_cli,
@@ -1547,7 +1350,6 @@ class Chasm:
             stdout_t = (res.get("stdout") or "").strip()
             stderr_t = (res.get("stderr") or "").strip()
             return_code = res.get("code", 0)
-            run_meta = res.get("meta") or {}
 
             if return_code != 0:
                 hint = ""
@@ -1555,8 +1357,6 @@ class Chasm:
                     hint = " (instale sDNA-plus no Python do QGIS ou aponte CHASM_SDNA_BIN para um sdnaintegral.exe funcional)"
                 raise RuntimeError(
                     f"sDNA (DW '{dw}') retornou código {return_code}. "
-                    f"CMD={info.get('cmd')} PARAMS={run_meta.get('param_str')} "
-                    f"INPUT={run_meta.get('in_shp')} OUTPUT={run_meta.get('out_shp')} TMPDIR={run_meta.get('tmp_dir')} "
                     f"STDOUT: {stdout_t} STDERR: {stderr_t}{hint}"
                 )
 

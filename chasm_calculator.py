@@ -151,7 +151,8 @@ class Chasm:
                         callback=self.run, parent=self.iface.mainWindow())
 
         self.add_action(icon_path, text=self.tr(u'Fragmentar Linhas por Polígonos (teste)'),
-                        callback=self.do_fragmentation_test, parent=self.iface.mainWindow())
+                        callback=self.do_fragmentation_test, add_to_toolbar=False,
+                        parent=self.iface.mainWindow())
 
         try:
             import processing

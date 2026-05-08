@@ -943,7 +943,8 @@ class Chasm:
         # Binário externo do sDNA (fora do ambiente do QGIS)
         sdna_env = os.environ.get("CHASM_SDNA_BIN")
         user_scripts = Path.home() / "AppData" / "Roaming" / "Python" / "Python312" / "Scripts" / "sdnaintegral.exe"
-        bundled_py37 = Path.home() / "Downloads" / "um_dos_3_stage" / "Python37" / "Scripts" / "sdnaintegral.exe"
+        bundled_py37_c = Path(r"C:\Python37\Scripts\sdnaintegral.exe")
+        bundled_py37_stage = Path.home() / "Downloads" / "um_dos_3_stage" / "Python37" / "Scripts" / "sdnaintegral.exe"
 
         def _is_pipx_path(candidate):
             try:
@@ -954,8 +955,10 @@ class Chasm:
 
         sdna_exe = None
         candidates = []
-        if bundled_py37.exists():
-            candidates.append(str(bundled_py37))
+        if bundled_py37_c.exists():
+            candidates.append(str(bundled_py37_c))
+        if bundled_py37_stage.exists():
+            candidates.append(str(bundled_py37_stage))
         if sdna_env and not _is_pipx_path(sdna_env):
             candidates.append(sdna_env)
         if user_scripts.exists():

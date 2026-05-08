@@ -1035,6 +1035,72 @@ class Chasm:
         results_info = []
         task_manager = QgsApplication.taskManager()
 
+        def _augment_sdna_runtime_env(base_env, sdna_cmd):
+            safe_env = dict(base_env)
+            for key in list(safe_env.keys()):
+                if key.startswith("PYTHON") or key in ("PYTHONHOME", "PYTHONPATH", "PYTHONIOENCODING"):
+                    safe_env.pop(key, None)
+
+            exe_path = None
+            try:
+                exe_path = Path(sdna_cmd[0]).resolve()
+            except Exception:
+                exe_path = None
+
+            path_parts = []
+
+            def _add_path(candidate):
+                if not candidate:
+                    return
+                try:
+                    c = str(Path(candidate))
+                except Exception:
+                    c = str(candidate)
+                if os.path.isdir(c) and c not in path_parts:
+                    path_parts.append(c)
+
+            def _is_qgis_runtime_path(candidate):
+                if not candidate:
+                    return False
+                lowered = str(candidate).replace("/", "\\").lower()
+                return (
+                    "\\qgis " in lowered or
+                    "\\qgis\\" in lowered or
+                    "\\apps\\qgis" in lowered or
+                    "\\apps\\python312" in lowered or
+                    "\\osgeo4w" in lowered
+                )
+
+            if exe_path is not None:
+                _add_path(exe_path.parent)
+                try:
+                    py_root = exe_path.parent.parent
+                except Exception:
+                    py_root = None
+                if py_root is not None:
+                    _add_path(py_root)
+                    _add_path(py_root / "DLLs")
+                    _add_path(py_root / "Lib")
+                    _add_path(py_root / "Lib" / "site-packages" / "sDNA" / "x64")
+                    safe_env["PYTHONHOME"] = str(py_root)
+
+            dll_dir = os.environ.get("CHASM_SDNA_DLL_DIR")
+            if dll_dir:
+                _add_path(dll_dir)
+
+            current_path_items = []
+            for item in (safe_env.get("PATH", "") or "").split(os.pathsep):
+                item = (item or "").strip()
+                if not item or _is_qgis_runtime_path(item):
+                    continue
+                if item not in current_path_items:
+                    current_path_items.append(item)
+
+            safe_env["PATH"] = os.pathsep.join(path_parts + current_path_items)
+            safe_env["PYTHONIOENCODING"] = "utf-8"
+            safe_env["PYTHONUTF8"] = "1"
+            return safe_env
+
         def _run_sdna_cli_tasks(task_infos):
             """
             Dispara todos os sDNA CLI em paralelo via QgsTask e espera todos terminarem.
@@ -1045,7 +1111,16 @@ class Chasm:
             remaining = len(task_infos)
 
             def _task_fn(task, cmd):
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                safe_env = _augment_sdna_runtime_env(os.environ.copy(), cmd)
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    errors="replace",
+                    env=safe_env,
+                    creationflags=0x08000000 if os.name == 'nt' else 0
+                )
                 stdout_t, stderr_t = proc.communicate()
                 return {"code": proc.returncode, "stdout": stdout_t, "stderr": stderr_t}
 
